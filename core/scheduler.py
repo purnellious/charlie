@@ -2,16 +2,47 @@
 Scheduler — manages timed jobs.
 v1: morning briefing only (creates a new Telegram topic each day).
 v2: added daily check-in reminder at configurable time (default 08:00).
+v3: morning briefing includes open follow-up items from followups.md.
 """
 
 import logging
 import os
-from datetime import datetime
+from datetime import date, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.ext import Application
 
 log = logging.getLogger(__name__)
+
+FOLLOWUPS_PATH = os.path.join(os.path.dirname(__file__), "..", "followups.md")
+
+
+def _load_due_followups() -> list[str]:
+    """Return descriptions of open follow-ups whose chase-from date is today or earlier."""
+    today = date.today()
+    due = []
+    try:
+        with open(FOLLOWUPS_PATH, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line.startswith("- [ ]"):
+                    continue
+                if "chase from:" not in line:
+                    continue
+                # Extract chase-from date
+                after_chase = line.split("chase from:")[1]
+                chase_str = after_chase.split("|")[0].strip()
+                try:
+                    chase_date = date.fromisoformat(chase_str)
+                except ValueError:
+                    continue
+                if chase_date <= today:
+                    # Extract description (between "- [ ] " and first "|")
+                    desc = line[len("- [ ] "):].split("|")[0].strip()
+                    due.append(desc)
+    except FileNotFoundError:
+        pass
+    return due
 
 
 async def _create_morning_briefing(app: Application):
@@ -29,10 +60,16 @@ async def _create_morning_briefing(app: Application):
         )
         thread_id = forum_topic.message_thread_id
 
+        due_followups = _load_due_followups()
+        followup_section = ""
+        if due_followups:
+            items = "\n".join(f"• {d}" for d in due_followups)
+            followup_section = f"\n\n**Follow-ups**\n{items}"
+
         await app.bot.send_message(
             chat_id=group_id,
             message_thread_id=thread_id,
-            text=f"Good morning. It's {today}.\n\nWhat does today look like for you?",
+            text=f"Good morning. It's {today}.{followup_section}\n\nWhat does today look like for you?",
         )
         log.info(f"Morning briefing topic created: '{topic_name}' (thread_id={thread_id})")
 

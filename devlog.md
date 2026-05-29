@@ -6,6 +6,7 @@ Newest entries at the top.
 ---
 
 ## 2026-05-29
+- Added followups.md tracker; surfaces open chase items in morning briefing
 - Added daily 8am check-in Telegram topic via APScheduler
 - Changed timezone to America/New_York
 - Added daily 9am git pull launchd agent on MacBook
