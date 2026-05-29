@@ -171,6 +171,9 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await send("Running meta-review — one moment...")
 
+    # Load conversation history before anything is saved to DB
+    history = load_history(topic_id)
+
     # Step 1+2: Build transcript → fresh Claude review → post it
     try:
         from core.tools.meta import run_meta_review
@@ -184,19 +187,19 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i in range(0, len(review), chunk_size):
         await send(review[i:i + chunk_size])
 
-    # Step 3: Charlie reacts with full system context (charlie.md + devlog loaded)
+    # Step 3: Charlie reacts with full conversation history + meta review as final user message
     charlie_instruction = (
-        "You have just received the following /meta review of a conversation between you and Jonathan. "
-        "Read it carefully. Respond with your honest reaction — which points you agree with, which you'd "
-        "push back on, what you'd propose to action (context updates, builds, or both), and what you'd "
-        "deprioritise. Be specific. Nothing will be actioned without Jonathan's approval."
-        f"\n\n{review}"
+        "Here is the /meta critic's analysis of the above conversation:\n\n"
+        f"{review}"
     )
 
     label_sent = False
+    charlie_take_parts: list[str] = []
 
     async def charlie_send_fn(text: str):
         nonlocal label_sent
+        if not text.startswith("| "):
+            charlie_take_parts.append(text)
         if not label_sent and not text.startswith("| "):
             text = "**Charlie's take:**\n\n" + text
             label_sent = True
@@ -206,11 +209,17 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from core.agent import handle_turn
         _, proposed_update = await handle_turn(
             user_text=charlie_instruction,
-            messages=[],
+            messages=history,
             send_fn=charlie_send_fn,
             thinking_enabled=THINKING_ENABLED,
             thinking_budget=THINKING_BUDGET,
         )
+
+        # Persist both outputs to history
+        save_message(topic_id, "assistant", "[/meta review]\n\n" + review)
+        if charlie_take_parts:
+            save_message(topic_id, "assistant", "[Charlie's take]\n\n" + "\n".join(charlie_take_parts))
+
         if proposed_update:
             PENDING_UPDATES[topic_id] = proposed_update
             preview = proposed_update["proposed_content"]
