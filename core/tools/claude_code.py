@@ -107,7 +107,19 @@ async def _auto_commit(task: str) -> str:
             cwd=str(CHARLIE_ROOT),
         )
         await commit.wait()
-        return "Changes committed to git." if commit.returncode == 0 else ""
+
+        if commit.returncode != 0:
+            return ""
+
+        push = await asyncio.create_subprocess_exec(
+            "git", "push", "origin", "main",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(CHARLIE_ROOT),
+        )
+        await push.wait()
+
+        return "Changes committed and pushed to GitHub." if push.returncode == 0 else "Committed locally (push failed)."
 
     except Exception as e:
         log.warning(f"Auto-commit failed: {e}")

@@ -6,6 +6,12 @@ Newest entries at the top.
 ---
 
 ## 2026-05-29
+- Added daily 8am check-in Telegram topic via APScheduler
+- Changed timezone to America/New_York
+- Added daily 9am git pull launchd agent on MacBook
+- Wired automatic git commit and push to github.com/purnellious/charlie after every Claude Code change
+- Added devlog.md as shared change log between Claude Code and Charlie
+- Load devlog in Charlie's agent system prompt
 - Initialised git repo, connected to github.com/purnellious/charlie
 - Installed Charlie as launchctl service (com.charlie) on always-on Mac
 - Fixed Claude Code tool to use claude-sonnet-4-6 and added retry logic for rate limits
