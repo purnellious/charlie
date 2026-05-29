@@ -109,7 +109,7 @@ New file: `principles.md`. Should be added to system prompt context loading in `
 ## BUG-006 — No pre-build checklist
 **Status:** Open
 **Priority:** High
-**Severity:** High — without this, builds can violate core principles (data minimalism, hub-and-spokes architecture) without anyone noticing until after the fact
+**Severity:** High — without this, builds can violate core principles (data minimalism, hub-and-spokes architecture) without anyone noticing until after the fact; Claude Code tasks can also silently overwrite or destroy files outside their intended scope
 **Blocks anything current:** No — but should be in place before the next tool is built
 **Rough effort:** Small (once BUG-003 and BUG-005 are resolved)
 **Logged:** 2026-05-29
@@ -117,13 +117,22 @@ New file: `principles.md`. Should be added to system prompt context loading in `
 **Problem:**
 There is no formal pre-build checklist that Charlie references before starting any Claude Code task. Established principles (hub-and-spokes architecture, data minimalism, human approval before action) and data architecture decisions should be consulted before every build, not just when Jonathan happens to re-state them. The SQLite disclosure failure (BUG-001) is a direct example of what happens without this.
 
+Additionally, Claude Code tasks currently have broad file access by default with no scoping constraints. If a task prompt doesn't explicitly list which files are off-limits or read-only, Claude Code will modify whatever it deems relevant — even files entirely outside the task's intent. On 2026-05-29, a diagnostic task focused on debugging /meta silently rewrote bugs.md from scratch, wiping BUG-002 through BUG-005. The data was only recovered because the loss was noticed and git history was available.
+
 **What needs fixing:**
-Once `principles.md` (BUG-005) and `data-architecture.md` (BUG-003) exist, create a pre-build checklist that Charlie explicitly runs through before any build. Checklist should include: Does this touch data storage? If so, does it comply with data-architecture.md? Does the architecture comply with principles.md? Has Jonathan approved the design before build starts? This checklist should be embedded in Charlie's system prompt or in a dedicated `pre-build-checklist.md`.
+Once `principles.md` (BUG-005) and `data-architecture.md` (BUG-003) exist, create a pre-build checklist that Charlie explicitly runs through before any Claude Code task — not just builds, but any task. Checklist should include at minimum:
+- Does this touch data storage? If so, does it comply with data-architecture.md?
+- Does the architecture comply with principles.md?
+- Has Jonathan approved the design before the task starts?
+- Which files is this task explicitly allowed to modify? All others are read-only.
+- Are any protected files (bugs.md, charlie.md, devlog.md, followups.md) being touched? If so, is that explicitly intended?
+
+The file-scoping rule should be embedded in every Claude Code task prompt going forward: explicitly state what the task may and may not modify. Protected files like bugs.md, charlie.md, devlog.md, and followups.md should require explicit permission to modify.
 
 **Dependencies:** BUG-003 (data-architecture.md), BUG-005 (principles.md)
 
 **Touches:**
-New file: `pre-build-checklist.md` or addition to `principles.md`. System prompt context loading.
+New file: `pre-build-checklist.md` or addition to `principles.md`. System prompt context loading. Claude Code task prompt template.
 
 ---
 

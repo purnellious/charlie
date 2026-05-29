@@ -3,6 +3,8 @@
 A shared record of significant changes. Both Claude Code and Charlie read this.
 Newest entries at the top.
 
+- 2026-05-29: Updated BUG-006 to include file-scoping rule and incident documentation
+
 ---
 
 ## 2026-05-29
