@@ -3,6 +3,7 @@
 A shared record of significant changes. Both Claude Code and Charlie read this.
 Newest entries at the top.
 
+2026-05-29: Added capabilities boundary to system prompt — Claude Code runs on always-on Mac only
 2026-05-29: Fixed /meta — Charlie's take now receives full conversation history; both meta and take persisted to DB
 2026-05-29: Added com.charlie.gitpull.plist — daily 9am git pull for main Mac
 
