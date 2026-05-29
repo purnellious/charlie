@@ -1,0 +1,8 @@
+.env
+charlie.md
+venv/
+data/
+*.db
+__pycache__/
+*.pyc
+*.log
