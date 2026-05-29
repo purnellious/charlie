@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 
 CHARLIE_ROOT = Path(__file__).parent.parent
 CHARLIE_DOC = CHARLIE_ROOT / "charlie.md"
+DEVLOG = CHARLIE_ROOT / "devlog.md"
 MODEL = os.getenv("CHARLIE_MODEL", "claude-sonnet-4-6")
 MAX_CHUNK = 4000
 
@@ -71,8 +72,15 @@ def _load_charlie_doc() -> str:
     return "(charlie.md not found — this will be created as you learn about Jonathan)"
 
 
+def _load_devlog() -> str:
+    if DEVLOG.exists():
+        return DEVLOG.read_text().strip()
+    return "(devlog.md not found)"
+
+
 def _build_system_prompt() -> str:
     charlie_doc = _load_charlie_doc()
+    devlog = _load_devlog()
     today = datetime.now().strftime("%A, %d %B %Y")
     return f"""You are Charlie — Jonathan's personal Chief of Staff and AI assistant.
 
@@ -101,11 +109,18 @@ works, what matters to him, and what you learn from each conversation. When you 
 something worth remembering, use the propose_charlie_update tool to suggest adding it to \
 your context document. Keep updates substantive — don't propose trivial changes.
 
+When you make a significant change to the system via run_claude_code, also update devlog.md \
+with a one-line entry (date + what changed). This keeps Claude Code sessions in sync.
+
 ## Your tools
 
 - **run_claude_code** — build new capabilities, write code, or make changes to Charlie itself
 - **propose_charlie_update** — propose an update to your persistent context (charlie.md) \
 when you learn something important about Jonathan. He will review before it's saved.
+
+## Recent changes (devlog)
+
+{devlog}
 
 ## Jonathan's context
 

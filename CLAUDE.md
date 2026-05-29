@@ -68,6 +68,12 @@ inside the tool file. The base system prompt in `core/agent.py` stays lean.
 Jonathan. It is gitignored and grows organically. Charlie proposes updates using the
 `propose_charlie_update` tool; Jonathan approves them before anything is written.
 
+## devlog.md
+
+`devlog.md` is the shared change log. Both Claude Code and Charlie read and write it.
+When making a significant change, add a one-line entry at the top (date + what changed).
+This keeps both Claude Code sessions and Charlie in sync on the current state of the system.
+
 ## Deployment
 
 - Runs as `com.charlie` via launchctl on the always-on Mac (jonathanpurnell@10.0.0.119)
