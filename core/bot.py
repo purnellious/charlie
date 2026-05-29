@@ -169,7 +169,7 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Meta review failed: {e}")
         return
 
-    # Send in 4000-char chunks to respect Telegram limits
+    # Send review in 4000-char chunks to respect Telegram limits
     chunk_size = 4000
     for i in range(0, len(review), chunk_size):
         try:
@@ -181,6 +181,70 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             log.warning(f"Failed to send meta review chunk: {e}")
             break
+
+    # Step 2: Charlie reads the review and proposes actions — no auto-execution
+    await asyncio.sleep(1)
+
+    async def _send(text: str):
+        try:
+            await context.bot.send_message(
+                chat_id=GROUP_ID,
+                text=text,
+                message_thread_id=topic_id,
+            )
+        except Exception as e:
+            log.warning(f"_send failed: {e}")
+
+    try:
+        import anthropic as _anthropic
+        from core.agent import _build_system_prompt
+
+        follow_up_prompt = (
+            "You have just received the following /meta review of a conversation. "
+            "Read it carefully. Do not act on anything automatically. "
+            "Respond with:\n"
+            "(1) which recommendations you think are highest priority and why,\n"
+            "(2) any proposed charlie.md context updates that should be made,\n"
+            "(3) any system changes or builds you'd recommend actioning.\n"
+            "Be specific. Jonathan will approve or reject before anything is done.\n\n"
+            f"--- META REVIEW ---\n{review}\n--- END REVIEW ---"
+        )
+
+        client = _anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        model = os.getenv("CHARLIE_MODEL", "claude-sonnet-4-6")
+
+        create_kwargs = dict(
+            model=model,
+            max_tokens=8000 if THINKING_ENABLED else 4096,
+            system=_build_system_prompt(),
+            messages=[{"role": "user", "content": follow_up_prompt}],
+            # No tools passed — Charlie describes proposals rather than executing them
+        )
+        if THINKING_ENABLED:
+            create_kwargs["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": max(1024, THINKING_BUDGET),
+            }
+
+        response = await client.messages.create(**create_kwargs)
+
+        for block in response.content:
+            if block.type == "thinking":
+                display = block.thinking if len(block.thinking) <= 800 else block.thinking[:800] + "..."
+                await _send(f"| {display} |")
+
+        follow_up_text = "".join(
+            block.text for block in response.content if hasattr(block, "text")
+        ).strip()
+
+        if follow_up_text:
+            await _send("**Charlie's response to the above:**")
+            for i in range(0, len(follow_up_text), chunk_size):
+                await _send(follow_up_text[i:i + chunk_size])
+
+    except Exception as e:
+        log.error(f"Charlie follow-up failed for topic {topic_id}: {e}")
+        await _send(f"Failed to generate follow-up proposals: {e}")
 
 
 def _write_charlie_doc(content: str):
