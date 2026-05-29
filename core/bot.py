@@ -146,7 +146,7 @@ async def _run_charlie_turn(update, context, topic_id: int, user_text: str):
 
 
 async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /meta — runs a ruthless meta-review of the current topic."""
+    """Handle /meta — ruthless review, then Charlie's reaction."""
     if not update.message:
         return
 
@@ -159,28 +159,72 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("/meta only works inside a topic.")
         return
 
-    await update.message.reply_text("Running meta-review — one moment...")
+    async def send(text: str):
+        try:
+            await context.bot.send_message(
+                chat_id=GROUP_ID,
+                text=text,
+                message_thread_id=topic_id,
+            )
+        except Exception as e:
+            log.warning(f"Meta send failed: {e}")
 
+    await send("Running meta-review — one moment...")
+
+    # Step 1+2: Build transcript → fresh Claude review → post it
     try:
         from core.tools.meta import run_meta_review
         review = await run_meta_review(topic_id)
     except Exception as e:
         log.error(f"Meta review failed for topic {topic_id}: {e}")
-        await update.message.reply_text(f"Meta review failed: {e}")
+        await send(f"Meta review failed: {e}")
         return
 
-    # Send in 4000-char chunks to respect Telegram limits
     chunk_size = 4000
     for i in range(0, len(review), chunk_size):
-        try:
-            await context.bot.send_message(
-                chat_id=GROUP_ID,
-                text=review[i:i + chunk_size],
-                message_thread_id=topic_id,
+        await send(review[i:i + chunk_size])
+
+    # Step 3: Charlie reacts with full system context (charlie.md + devlog loaded)
+    charlie_instruction = (
+        "You have just received the following /meta review of a conversation between you and Jonathan. "
+        "Read it carefully. Respond with your honest reaction — which points you agree with, which you'd "
+        "push back on, what you'd propose to action (context updates, builds, or both), and what you'd "
+        "deprioritise. Be specific. Nothing will be actioned without Jonathan's approval."
+        f"\n\n{review}"
+    )
+
+    label_sent = False
+
+    async def charlie_send_fn(text: str):
+        nonlocal label_sent
+        if not label_sent and not text.startswith("| "):
+            text = "**Charlie's take:**\n\n" + text
+            label_sent = True
+        await send(text)
+
+    try:
+        from core.agent import handle_turn
+        _, proposed_update = await handle_turn(
+            user_text=charlie_instruction,
+            messages=[],
+            send_fn=charlie_send_fn,
+            thinking_enabled=THINKING_ENABLED,
+            thinking_budget=THINKING_BUDGET,
+        )
+        if proposed_update:
+            PENDING_UPDATES[topic_id] = proposed_update
+            preview = proposed_update["proposed_content"]
+            if len(preview) > 800:
+                preview = preview[:800] + "\n...[truncated]"
+            await send(
+                f"Proposed update to charlie.md\n\n"
+                f"Reason: {proposed_update['reason']}\n\n"
+                f"---\n{preview}\n---\n\n"
+                f"Reply 'approve' to save or 'reject' to discard."
             )
-        except Exception as e:
-            log.warning(f"Failed to send meta review chunk: {e}")
-            break
+    except Exception as e:
+        log.error(f"Charlie's take failed for topic {topic_id}: {e}")
+        await send(f"Charlie's take failed: {e}")
 
 
 def _write_charlie_doc(content: str):
