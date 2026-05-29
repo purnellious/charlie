@@ -93,6 +93,15 @@ async def _auto_commit(task: str) -> str:
         if not stdout.strip():
             return ""
 
+        # Pull before committing to avoid conflicts with Claude Code sessions
+        pull = await asyncio.create_subprocess_exec(
+            "git", "pull", "--rebase", "origin", "main",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(CHARLIE_ROOT),
+        )
+        await pull.wait()
+
         add = await asyncio.create_subprocess_exec(
             "git", "add", "-A",
             cwd=str(CHARLIE_ROOT),
