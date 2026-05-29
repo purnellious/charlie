@@ -20,7 +20,7 @@ if _CHARLIE_ROOT not in sys.path:
     sys.path.insert(0, _CHARLIE_ROOT)
 
 from telegram import Update
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from core.history import init_db, load_history, save_message
 from core.scheduler import setup_scheduler, teardown_scheduler
@@ -145,6 +145,44 @@ async def _run_charlie_turn(update, context, topic_id: int, user_text: str):
         )
 
 
+async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /meta — runs a ruthless meta-review of the current topic."""
+    if not update.message:
+        return
+
+    chat_id = str(update.effective_chat.id)
+    if chat_id != GROUP_ID:
+        return
+
+    topic_id = update.message.message_thread_id
+    if topic_id is None:
+        await update.message.reply_text("/meta only works inside a topic.")
+        return
+
+    await update.message.reply_text("Running meta-review — one moment...")
+
+    try:
+        from core.tools.meta import run_meta_review
+        review = await run_meta_review(topic_id)
+    except Exception as e:
+        log.error(f"Meta review failed for topic {topic_id}: {e}")
+        await update.message.reply_text(f"Meta review failed: {e}")
+        return
+
+    # Send in 4000-char chunks to respect Telegram limits
+    chunk_size = 4000
+    for i in range(0, len(review), chunk_size):
+        try:
+            await context.bot.send_message(
+                chat_id=GROUP_ID,
+                text=review[i:i + chunk_size],
+                message_thread_id=topic_id,
+            )
+        except Exception as e:
+            log.warning(f"Failed to send meta review chunk: {e}")
+            break
+
+
 def _write_charlie_doc(content: str):
     charlie_doc = Path(__file__).parent.parent / "charlie.md"
     charlie_doc.write_text(content)
@@ -187,6 +225,7 @@ def main():
         .post_shutdown(post_shutdown)
         .build()
     )
+    app.add_handler(CommandHandler("meta", on_meta_command))
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.VOICE) & ~filters.COMMAND,
         on_message,
