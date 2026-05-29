@@ -6,6 +6,7 @@ Newest entries at the top.
 ---
 
 ## 2026-05-29
+- Rewrote bugs.md with full structure; added BUG-002 through BUG-005 from /meta review
 - Created bugs.md; logged BUG-001 (SQLite unbounded message history)
 - Added /meta command: posts a ruthless three-section review of any topic's conversation via a fresh Claude call
 - Added followups.md tracker; surfaces open chase items in morning briefing
