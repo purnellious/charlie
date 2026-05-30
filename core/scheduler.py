@@ -12,6 +12,8 @@ from datetime import date, datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.ext import Application
 
+from core.history import save_message
+
 log = logging.getLogger(__name__)
 
 FOLLOWUPS_PATH = os.path.join(os.path.dirname(__file__), "..", "followups.md")
@@ -66,11 +68,13 @@ async def _create_morning_briefing(app: Application):
             items = "\n".join(f"• {d}" for d in due_followups)
             followup_section = f"\n\n**Follow-ups**\n{items}"
 
+        message_text = f"Good morning. It's {today}.{followup_section}\n\nWhat does today look like for you?"
         await app.bot.send_message(
             chat_id=group_id,
             message_thread_id=thread_id,
-            text=f"Good morning. It's {today}.{followup_section}\n\nWhat does today look like for you?",
+            text=message_text,
         )
+        save_message(thread_id, "assistant", message_text)
         log.info(f"Morning briefing topic created: '{topic_name}' (thread_id={thread_id})")
 
     except Exception as e:
@@ -91,11 +95,13 @@ async def _create_checkin(app: Application):
         )
         thread_id = forum_topic.message_thread_id
 
+        message_text = "Good morning Jonathan — daily context check-in. I have 5 questions for you today. Ready when you are."
         await app.bot.send_message(
             chat_id=group_id,
             message_thread_id=thread_id,
-            text="Good morning Jonathan — daily context check-in. I have 5 questions for you today. Ready when you are.",
+            text=message_text,
         )
+        save_message(thread_id, "assistant", message_text)
         log.info(f"Check-in topic created: '{topic_name}' (thread_id={thread_id})")
 
     except Exception as e:

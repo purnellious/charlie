@@ -1,5 +1,11 @@
 # Charlie — Bug List
 
+---
+
+**Architectural rule: Any message sent directly via the Telegram bot (app.bot.send_message, bot.send_message, etc.) is NOT automatically saved to the messages DB. Any background process, scheduler, or tool that sends Telegram messages must explicitly write those messages to the DB as assistant messages (with the correct topic_id) immediately after sending, so the agent can see them in conversation history when the user replies.**
+
+---
+
 Open issues to be worked through over time. Newest bugs at the bottom.
 
 **Fields per entry:**
