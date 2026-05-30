@@ -9,6 +9,7 @@
 Open issues to be worked through over time. Newest bugs at the bottom.
 
 **Fields per entry:**
+- **Type:** Bug / Debt / Rule
 - **Status:** Open / In Progress / Closed
 - **Priority:** High / Medium / Low
 - **Severity:** High (breaks things or violates core principles) / Medium (creates friction or inefficiency) / Low (nice to have)
@@ -18,6 +19,7 @@ Open issues to be worked through over time. Newest bugs at the bottom.
 ---
 
 ## BUG-001 — SQLite message history grows indefinitely
+**Type:** Debt
 **Status:** Open
 **Priority:** Medium
 **Severity:** High — violates Jonathan's core data minimalism principle and accumulates sensitive conversation data indefinitely
@@ -37,6 +39,7 @@ Decide on and implement a retention policy. Options: auto-delete after N days, t
 ---
 
 ## BUG-002 — No deployment verification step after builds
+**Type:** Bug
 **Status:** Open
 **Priority:** High
 **Severity:** High — causes Charlie to declare things "live" that aren't actually running, destroying trust in deployment announcements
@@ -56,6 +59,7 @@ After any Claude Code build, the workflow should automatically: (1) confirm the 
 ---
 
 ## BUG-003 — No data architecture document
+**Type:** Debt
 **Status:** Open
 **Priority:** High
 **Severity:** High — without this, every new tool build risks violating Jonathan's data minimalism principle without anyone noticing until after the fact
@@ -75,6 +79,7 @@ New file: `data-architecture.md`. Relevant to all future tool builds.
 ---
 
 ## BUG-004 — Meta review prompt is not documented
+**Type:** Debt
 **Status:** Open
 **Priority:** Medium
 **Severity:** Medium — the prompt is the core of the Meta tool and should be reviewable and improvable, but isn't visible anywhere
@@ -94,6 +99,7 @@ Extract the meta review prompt into a standalone readable file — e.g. `core/to
 ---
 
 ## BUG-005 — No design principles document
+**Type:** Debt
 **Status:** Open
 **Priority:** High
 **Severity:** High — without written principles, architectural decisions are made ad hoc and Jonathan has to re-state his preferences every time rather than them being baked into how Charlie operates
@@ -113,6 +119,7 @@ New file: `principles.md`. Should be added to system prompt context loading in `
 ---
 
 ## BUG-006 — No pre-build checklist
+**Type:** Debt
 **Status:** Open
 **Priority:** High
 **Severity:** High — without this, builds can violate core principles (data minimalism, hub-and-spokes architecture) without anyone noticing until after the fact; Claude Code tasks can also silently overwrite or destroy files outside their intended scope
@@ -143,6 +150,7 @@ New file: `pre-build-checklist.md` or addition to `principles.md`. System prompt
 ---
 
 ## BUG-007 — No active task list within a session
+**Type:** Debt
 **Status:** Open
 **Priority:** Medium
 **Severity:** Medium — without this, open threads and action items get dropped mid-conversation, requiring Jonathan to re-raise them
@@ -162,6 +170,7 @@ Charlie should maintain an internal running list of open items during a session 
 ---
 
 ## BUG-008 — Architectural rules should live in their own document
+**Type:** Debt
 **Status:** Open
 **Priority:** Medium
 **Severity:** Medium — architectural rules buried in bugs.md are easy to miss and hard to maintain; separation of concerns is a basic hygiene issue
@@ -173,7 +182,33 @@ Charlie should maintain an internal running list of open items during a session 
 Architectural rules are currently sitting at the top of `bugs.md` (above the bug list itself). This is the wrong home for them — bugs.md is a tracking document, not an architecture reference. Rules mixed into a bug list are harder to find, easier to overlook, and create confusion about what the document is for.
 
 **What needs fixing:**
-Create a dedicated document (e.g. `architecture.md` or `rules.md`) and move the standing architectural rules there. Update any references to those rules so they point to the new document. The top of `bugs.md` should contain only the bug list header and field definitions.
+Create `architecture.md` in the project root. This document should contain standing rules and architectural constraints that apply to all future development — starting with the Telegram/DB rule currently sitting at the top of `bugs.md`:
+
+> Any message sent directly via the Telegram bot (app.bot.send_message, bot.send_message, etc.) is NOT automatically saved to the messages DB. Any background process, scheduler, or tool that sends Telegram messages must explicitly write those messages to the DB as assistant messages (with the correct topic_id) immediately after sending, so the agent can see them in conversation history when the user replies.
+
+Once `architecture.md` is created and this rule is in it, remove the rule block from the top of `bugs.md` so bugs.md contains only the bug list header and field definitions.
+
+Charlie's system prompt context-loading section (in `core/agent.py` or `core/bot.py`, wherever `charlie.md` and `devlog.md` are loaded) should also load `architecture.md`, so its rules are visible to Charlie in every session without Jonathan having to repeat them.
 
 **Touches:**
-`bugs.md`, new file: `architecture.md` (or `rules.md`). Any files or prompts that reference the architectural rules.
+New file: `architecture.md` (project root). `bugs.md` (remove the rule block once moved). `core/agent.py` or `core/bot.py` (add architecture.md to context loading).
+
+---
+
+## BUG-009 — Scheduler-created topics should write a pending_context handoff note
+**Type:** Debt
+**Status:** Open
+**Priority:** Medium
+**Severity:** Medium — without this, the agent has no structured way to know a topic was scheduler-created or what task it relates to; if DB write order is wrong the context is lost entirely
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-05-30
+
+**Problem:**
+When the scheduler creates a Telegram topic and sends an opening message, the main agent has no structured way to know the topic was scheduler-created or what task it relates to. If the DB write is missed or ordered incorrectly, the agent loses context entirely and must infer its purpose from message history order — which is fragile.
+
+**What needs fixing:**
+When the scheduler creates a topic and sends its opening message, also write a structured handoff record — either to a `pending_context` table in the DB or as a standardised metadata message — containing: topic_id, task name (e.g. "daily_checkin"), timestamp, and opening message text. The agent should check for this on load so it can recover context explicitly rather than inferring it from message history order.
+
+**Touches:**
+`core/scheduler.py`, `core/db.py` (new `pending_context` table or equivalent), `core/agent.py` or `core/bot.py` (check for handoff on topic load).
