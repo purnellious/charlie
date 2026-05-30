@@ -158,3 +158,22 @@ Charlie should maintain an internal running list of open items during a session 
 
 **Touches:**
 `core/bot.py` or system prompt behaviour. Possibly a session state mechanism.
+
+---
+
+## BUG-008 — Architectural rules should live in their own document
+**Status:** Open
+**Priority:** Medium
+**Severity:** Medium — architectural rules buried in bugs.md are easy to miss and hard to maintain; separation of concerns is a basic hygiene issue
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-05-30
+
+**Problem:**
+Architectural rules are currently sitting at the top of `bugs.md` (above the bug list itself). This is the wrong home for them — bugs.md is a tracking document, not an architecture reference. Rules mixed into a bug list are harder to find, easier to overlook, and create confusion about what the document is for.
+
+**What needs fixing:**
+Create a dedicated document (e.g. `architecture.md` or `rules.md`) and move the standing architectural rules there. Update any references to those rules so they point to the new document. The top of `bugs.md` should contain only the bug list header and field definitions.
+
+**Touches:**
+`bugs.md`, new file: `architecture.md` (or `rules.md`). Any files or prompts that reference the architectural rules.
