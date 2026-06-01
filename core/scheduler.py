@@ -16,6 +16,20 @@ from core.history import save_message
 
 log = logging.getLogger(__name__)
 
+
+async def proactive_send(app: Application, group_id: str, thread_id: int, text: str):
+    """
+    Send a proactive message into a topic AND save it to conversation history.
+    All scheduler jobs must use this instead of calling app.bot.send_message directly —
+    otherwise Charlie has no memory of what it said when the user replies.
+    """
+    await app.bot.send_message(
+        chat_id=group_id,
+        message_thread_id=thread_id,
+        text=text,
+    )
+    save_message(thread_id, "assistant", text)
+
 FOLLOWUPS_PATH = os.path.join(os.path.dirname(__file__), "..", "followups.md")
 
 
@@ -69,12 +83,7 @@ async def _create_morning_briefing(app: Application):
             followup_section = f"\n\n**Follow-ups**\n{items}"
 
         message_text = f"Good morning. It's {today}.{followup_section}\n\nWhat does today look like for you?"
-        await app.bot.send_message(
-            chat_id=group_id,
-            message_thread_id=thread_id,
-            text=message_text,
-        )
-        save_message(thread_id, "assistant", message_text)
+        await proactive_send(app, group_id, thread_id, message_text)
         log.info(f"Morning briefing topic created: '{topic_name}' (thread_id={thread_id})")
 
     except Exception as e:
@@ -96,12 +105,7 @@ async def _create_checkin(app: Application):
         thread_id = forum_topic.message_thread_id
 
         message_text = "Good morning Jonathan — daily context check-in. I have 5 questions for you today. Ready when you are."
-        await app.bot.send_message(
-            chat_id=group_id,
-            message_thread_id=thread_id,
-            text=message_text,
-        )
-        save_message(thread_id, "assistant", message_text)
+        await proactive_send(app, group_id, thread_id, message_text)
         log.info(f"Check-in topic created: '{topic_name}' (thread_id={thread_id})")
 
     except Exception as e:

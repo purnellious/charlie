@@ -53,6 +53,18 @@ Thinking blocks are stripped before storage (they don't persist across sessions)
 **`core/scheduler.py`** — APScheduler. Currently one job: creates a morning briefing
 Telegram topic at the configured time each day.
 
+## Adding a new scheduled job
+
+All scheduler jobs that send proactive messages MUST use `proactive_send()` from
+`core/scheduler.py` instead of calling `app.bot.send_message()` directly. This function
+sends the message AND saves it to the conversation history DB in one call. If you use
+`app.bot.send_message()` directly, Charlie will have no memory of what it said when the
+user replies, breaking the conversation.
+
+```python
+await proactive_send(app, group_id, thread_id, message_text)
+```
+
 ## Adding a new tool
 
 1. Create `core/tools/your_tool.py` with an async entry function.
