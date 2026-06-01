@@ -53,6 +53,23 @@ Thinking blocks are stripped before storage (they don't persist across sessions)
 **`core/scheduler.py`** — APScheduler. Currently one job: creates a morning briefing
 Telegram topic at the configured time each day.
 
+## Bug management
+
+Bugs are tracked in `bugs.md` and each open bug has a dedicated Telegram topic (named
+`❗ BUG-NNN — title`). The mapping between bug ID and topic_id is stored in bugs.md.
+
+- **Logging a bug:** tell Charlie in natural language → Charlie calls the `log_bug` tool →
+  `core/tools/bugs.py` creates the bugs.md entry and Telegram topic
+- **Resolving a bug:** say "this is resolved" in the bug topic → Charlie assesses the
+  conversation → calls `resolve_bug` tool if confirmed → marks bugs.md as Closed
+- **Accidental close:** if you close a bug topic whose bug is still Open, Charlie automatically
+  reopens it (via the `ForumTopicClosed` handler in bot.py)
+- **Batch topic creation:** `/createbugtopics` command creates topics for all open bugs without one
+- **After resolving:** run `/distil` to archive the resolution and delete the raw history
+
+`core/state.py` holds the shared Telegram app reference so tools can make Telegram API calls.
+Set by `post_init()` in bot.py.
+
 ## Adding a new scheduled job
 
 All scheduler jobs that send proactive messages MUST use `proactive_send()` from

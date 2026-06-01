@@ -12,6 +12,12 @@ Newest entries at the top.
 
 ---
 
+## 2026-06-01 (2)
+- Built bug topic system: core/tools/bugs.py, core/state.py
+- Agent tools: log_bug (creates bugs.md entry + Telegram topic), resolve_bug (marks closed)
+- Bot: /createbugtopics command, ForumTopicClosed handler (auto-reopens unresolved bugs)
+- Bug topics named with ❗ emoji prefix for easy identification
+
 ## 2026-06-01
 - Built /distil command: distils topic conversation into context-archive.md, then deletes raw history
 - Created context-archive.md: loaded into Charlie's system prompt alongside charlie.md

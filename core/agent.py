@@ -42,6 +42,45 @@ TOOLS = [
         }
     },
     {
+        "name": "log_bug",
+        "description": (
+            "Log a new bug in bugs.md and create a dedicated Telegram topic for it. "
+            "Use this when Jonathan reports a bug, identifies a problem, or raises a debt item. "
+            "Infer sensible values for type/priority/severity/effort from context. "
+            "Be concise but complete in problem and what_to_fix."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Short bug title (one line)."},
+                "type": {"type": "string", "enum": ["Bug", "Debt", "Rule"], "description": "Bug, Debt, or Rule."},
+                "priority": {"type": "string", "enum": ["High", "Medium", "Low"]},
+                "severity": {"type": "string", "description": "One-line severity description including High/Medium/Low."},
+                "effort": {"type": "string", "enum": ["Small", "Medium", "Large"]},
+                "problem": {"type": "string", "description": "Clear description of the problem."},
+                "what_to_fix": {"type": "string", "description": "What needs to be done to fix it."},
+            },
+            "required": ["title", "type", "priority", "severity", "effort", "problem", "what_to_fix"]
+        }
+    },
+    {
+        "name": "resolve_bug",
+        "description": (
+            "Mark a bug as resolved in bugs.md after confirming the conversation contains "
+            "a complete, working fix. Only call this if you are confident the bug is fully solved "
+            "or Jonathan has explicitly said it's done. Include a clear resolution summary. "
+            "After calling this, the topic can be safely closed and /distil run to archive it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "bug_id": {"type": "string", "description": "e.g. BUG-001"},
+                "resolution_summary": {"type": "string", "description": "What was done to fix it."},
+            },
+            "required": ["bug_id", "resolution_summary"]
+        }
+    },
+    {
         "name": "propose_charlie_update",
         "description": (
             "Propose an update to charlie.md — your persistent context document about Jonathan. "
@@ -129,6 +168,8 @@ with a one-line entry (date + what changed). This keeps Claude Code sessions in 
 - **run_claude_code** — build new capabilities, write code, or make changes to Charlie itself
 - **propose_charlie_update** — propose an update to your persistent context (charlie.md) \
 when you learn something important about Jonathan. He will review before it's saved.
+- **log_bug** — log a bug in bugs.md and open a dedicated Telegram topic for it
+- **resolve_bug** — mark a bug as resolved after confirming a complete fix exists
 
 **Capabilities boundary:** You run exclusively on Jonathan's always-on Mac (10.0.0.119). \
 You cannot directly access or execute anything on his main Mac. If Jonathan asks you to do \
@@ -236,6 +277,50 @@ async def handle_turn(
                     "type": "tool_result",
                     "tool_use_id": block.id,
                     "content": "Update proposed. Jonathan will review it.",
+                })
+
+            elif block.name == "log_bug":
+                from core.tools.bugs import create_bug_entry, create_bug_topic, get_bug_by_id
+                try:
+                    bug_id = create_bug_entry(
+                        title=block.input.get("title", ""),
+                        type=block.input.get("type", "Bug"),
+                        priority=block.input.get("priority", "Medium"),
+                        severity=block.input.get("severity", "Medium"),
+                        effort=block.input.get("effort", "Medium"),
+                        problem=block.input.get("problem", ""),
+                        what_to_fix=block.input.get("what_to_fix", ""),
+                    )
+                    bug = get_bug_by_id(bug_id)
+                    await create_bug_topic(bug)
+                    result = f"{bug_id} logged and topic created."
+                except Exception as e:
+                    result = f"Bug logging failed: {e}"
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+
+            elif block.name == "resolve_bug":
+                from core.tools.bugs import close_bug, get_bug_by_id
+                bug_id = block.input.get("bug_id", "")
+                resolution = block.input.get("resolution_summary", "")
+                try:
+                    bug = get_bug_by_id(bug_id)
+                    if not bug:
+                        result = f"Bug {bug_id} not found."
+                    elif bug.get("status") == "Closed":
+                        result = f"{bug_id} is already closed."
+                    else:
+                        close_bug(bug_id, resolution)
+                        result = f"{bug_id} marked as resolved. You can now close the topic and run /distil."
+                except Exception as e:
+                    result = f"resolve_bug failed: {e}"
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
                 })
 
             else:

@@ -24,6 +24,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 from core.history import init_db, load_history, save_message, delete_topic_history
 from core.scheduler import setup_scheduler, teardown_scheduler
+from core import state
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -336,7 +337,46 @@ async def on_topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def on_create_bug_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/createbugtopics — batch-create Telegram topics for all open bugs without one."""
+    if str(update.effective_chat.id) != GROUP_ID:
+        return
+    await update.message.reply_text("Creating topics for all open bugs without one...")
+    from core.tools.bugs import create_topics_for_all_open_bugs
+    created = await create_topics_for_all_open_bugs()
+    if created:
+        await update.message.reply_text(f"Done. Created topics for: {', '.join(created)}")
+    else:
+        await update.message.reply_text("No open bugs needed a topic.")
+
+
+async def on_topic_closed(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reopen a bug topic if the bug is not yet resolved."""
+    if str(update.effective_chat.id) != GROUP_ID:
+        return
+    topic_id = update.message.message_thread_id
+    if topic_id is None:
+        return
+    from core.tools.bugs import get_bug_by_topic_id
+    bug = get_bug_by_topic_id(topic_id)
+    if bug and bug.get('status') == 'Open':
+        try:
+            await context.bot.reopen_forum_topic(
+                chat_id=GROUP_ID,
+                message_thread_id=topic_id,
+            )
+            await context.bot.send_message(
+                chat_id=GROUP_ID,
+                message_thread_id=topic_id,
+                text=f"{bug['bug_id']} is still open — topic reopened. Resolve the bug before closing.",
+            )
+            log.info(f"Reopened topic {topic_id} for unresolved {bug['bug_id']}")
+        except Exception as e:
+            log.error(f"Failed to reopen topic {topic_id}: {e}")
+
+
 async def post_init(app: Application):
+    state.set_app(app, GROUP_ID)
     await setup_scheduler(app)
 
 
@@ -362,6 +402,11 @@ def main():
     )
     app.add_handler(CommandHandler("meta", on_meta_command))
     app.add_handler(CommandHandler("distil", on_distil_command))
+    app.add_handler(CommandHandler("createbugtopics", on_create_bug_topics))
+    app.add_handler(MessageHandler(
+        filters.StatusUpdate.FORUM_TOPIC_CLOSED,
+        on_topic_closed,
+    ))
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.VOICE) & ~filters.COMMAND,
         on_message,
