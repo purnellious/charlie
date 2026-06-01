@@ -12,6 +12,12 @@ Newest entries at the top.
 
 ---
 
+## 2026-06-01
+- Built /distil command: distils topic conversation into context-archive.md, then deletes raw history
+- Created context-archive.md: loaded into Charlie's system prompt alongside charlie.md
+- Added delete_topic_history() to history.py
+- Three-option approval flow: approve (save + delete), discard (delete only), reject (keep history)
+
 ## 2026-05-29
 - Added BUG-006 (pre-build checklist) and BUG-007 (active task list) to bugs.md
 - Created bugs.md; logged BUG-001 (SQLite unbounded message history)

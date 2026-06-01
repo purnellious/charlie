@@ -17,6 +17,7 @@ log = logging.getLogger(__name__)
 CHARLIE_ROOT = Path(__file__).parent.parent
 CHARLIE_DOC = CHARLIE_ROOT / "charlie.md"
 DEVLOG = CHARLIE_ROOT / "devlog.md"
+CONTEXT_ARCHIVE = CHARLIE_ROOT / "context-archive.md"
 MODEL = os.getenv("CHARLIE_MODEL", "claude-sonnet-4-6")
 MAX_CHUNK = 4000
 
@@ -78,9 +79,20 @@ def _load_devlog() -> str:
     return "(devlog.md not found)"
 
 
+def _load_context_archive() -> str:
+    if CONTEXT_ARCHIVE.exists():
+        content = CONTEXT_ARCHIVE.read_text().strip()
+        # Don't include the placeholder text if nothing has been archived yet
+        if "*No entries yet.*" in content:
+            return ""
+        return content
+    return ""
+
+
 def _build_system_prompt() -> str:
     charlie_doc = _load_charlie_doc()
     devlog = _load_devlog()
+    context_archive = _load_context_archive()
     today = datetime.now().strftime("%A, %d %B %Y")
     return f"""You are Charlie — Jonathan's personal Chief of Staff and AI assistant.
 
@@ -129,7 +141,8 @@ and claiming it's done.
 
 ## Jonathan's context
 
-{charlie_doc}"""
+{charlie_doc}
+{f"## Archived context from past topics{chr(10)}{context_archive}" if context_archive else ""}"""
 
 
 async def handle_turn(

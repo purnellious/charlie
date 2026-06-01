@@ -80,6 +80,15 @@ inside the tool file. The base system prompt in `core/agent.py` stays lean.
 Jonathan. It is gitignored and grows organically. Charlie proposes updates using the
 `propose_charlie_update` tool; Jonathan approves them before anything is written.
 
+## context-archive.md
+
+`context-archive.md` stores distilled context from completed topics. It is committed to git
+and loaded into Charlie's system prompt alongside `charlie.md`. Each entry is the minimum
+useful signal from a conversation — added via `/distil` when closing a topic.
+
+Do not write to this file directly. It is appended to by `_append_to_context_archive()` in
+`core/bot.py` when a distillation is approved.
+
 ## devlog.md
 
 `devlog.md` is the shared change log. Both Claude Code and Charlie read and write it.

@@ -22,7 +22,7 @@ if _CHARLIE_ROOT not in sys.path:
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from core.history import init_db, load_history, save_message
+from core.history import init_db, load_history, save_message, delete_topic_history
 from core.scheduler import setup_scheduler, teardown_scheduler
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -36,6 +36,10 @@ THINKING_BUDGET = int(os.getenv("THINKING_BUDGET", "2000"))
 
 # Pending charlie.md update proposals — keyed by topic_id
 PENDING_UPDATES: dict[int, dict] = {}
+
+# Pending distillation proposals — keyed by topic_id
+# Value: {"distillate": str} or {"distillate": "NOTHING_TO_KEEP"}
+PENDING_DISTIL: dict[int, dict] = {}
 
 # Tracks topics with an active agent turn in progress — prevents overlapping calls
 ACTIVE_TOPICS: set[int] = set()
@@ -71,6 +75,31 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_text = update.message.text
     else:
         return
+
+    # Handle approve/reject/discard for pending distillation proposals
+    if topic_id in PENDING_DISTIL:
+        response_lower = user_text.strip().lower()
+        pending = PENDING_DISTIL.get(topic_id, {})
+        distillate = pending.get("distillate", "NOTHING_TO_KEEP")
+
+        if response_lower == "approve":
+            PENDING_DISTIL.pop(topic_id)
+            if distillate != "NOTHING_TO_KEEP":
+                _append_to_context_archive(distillate)
+                await update.message.reply_text("Saved to context-archive.md. Conversation history deleted.")
+            else:
+                await update.message.reply_text("Nothing to archive. Conversation history deleted.")
+            delete_topic_history(topic_id)
+            return
+        elif response_lower == "discard":
+            PENDING_DISTIL.pop(topic_id)
+            delete_topic_history(topic_id)
+            await update.message.reply_text("Conversation history deleted. Nothing archived.")
+            return
+        elif response_lower == "reject":
+            PENDING_DISTIL.pop(topic_id)
+            await update.message.reply_text("Distillation rejected. History kept — run /distil again if you want to retry.")
+            return
 
     # Handle approve/reject for pending charlie.md update proposals
     if topic_id in PENDING_UPDATES:
@@ -236,6 +265,59 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send(f"Charlie's take failed: {e}")
 
 
+async def on_distil_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /distil — distil topic into context-archive.md, then delete raw history."""
+    if not update.message:
+        return
+
+    chat_id = str(update.effective_chat.id)
+    if chat_id != GROUP_ID:
+        return
+
+    topic_id = update.message.message_thread_id
+    if topic_id is None:
+        await update.message.reply_text("/distil only works inside a topic.")
+        return
+
+    await update.message.reply_text("Distilling conversation — one moment...")
+
+    try:
+        from core.tools.distil import run_distil
+        distillate = await run_distil(topic_id)
+    except Exception as e:
+        log.error(f"Distillation failed for topic {topic_id}: {e}")
+        await update.message.reply_text(f"Distillation failed: {e}")
+        return
+
+    PENDING_DISTIL[topic_id] = {"distillate": distillate}
+
+    if distillate == "NOTHING_TO_KEEP":
+        await update.message.reply_text(
+            "Nothing worth archiving in this conversation.\n\n"
+            "Reply 'approve' to delete the history, or 'reject' to keep it."
+        )
+    else:
+        preview = distillate if len(distillate) <= 1200 else distillate[:1200] + "\n...[truncated]"
+        await update.message.reply_text(
+            f"Proposed archive entry:\n\n{preview}\n\n"
+            f"'approve' — save to context-archive.md and delete history\n"
+            f"'discard' — delete history without saving\n"
+            f"'reject' — keep history and try again"
+        )
+
+
+def _append_to_context_archive(distillate: str):
+    archive = Path(__file__).parent.parent / "context-archive.md"
+    if archive.exists():
+        content = archive.read_text()
+        content = content.replace("\n\n*No entries yet.*", "")
+        content = content.rstrip() + f"\n\n{distillate}\n\n---"
+    else:
+        content = f"# Charlie — Context Archive\n\n---\n\n{distillate}\n\n---"
+    archive.write_text(content)
+    log.info("context-archive.md updated")
+
+
 def _write_charlie_doc(content: str):
     charlie_doc = Path(__file__).parent.parent / "charlie.md"
     charlie_doc.write_text(content)
@@ -279,6 +361,7 @@ def main():
         .build()
     )
     app.add_handler(CommandHandler("meta", on_meta_command))
+    app.add_handler(CommandHandler("distil", on_distil_command))
     app.add_handler(MessageHandler(
         (filters.TEXT | filters.VOICE) & ~filters.COMMAND,
         on_message,

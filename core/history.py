@@ -78,3 +78,11 @@ def save_message(topic_id: int, role: str, content):
             (str(topic_id), role, content_to_store)
         )
         conn.commit()
+
+
+def delete_topic_history(topic_id: int):
+    """Delete all messages for a topic. Called after distillation is approved or discarded."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM messages WHERE topic_id = ?", (str(topic_id),))
+        conn.commit()
+    log.info(f"Deleted conversation history for topic {topic_id}")
