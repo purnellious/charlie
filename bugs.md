@@ -125,26 +125,31 @@ Several core principles have been clearly established through conversation: (1) 
 
 ---
 
-## BUG-006 — No pre-build checklist
+## BUG-006 — Pre-build checklist exists but is not enforced
 **Type:** Debt
-**Status:** Closed
+**Status:** Open
 **Priority:** High
-**Severity:** High — without this, builds can violate core principles (data minimalism, hub-and-spokes architecture) without anyone noticing until after the fact; Claude Code tasks can also silently overwrite or destroy files outside their intended scope
-**Blocks anything current:** No — but should be in place before the next tool is built
-**Rough effort:** Small (once BUG-003 and BUG-005 are resolved)
+**Severity:** High — a checklist that is never auditably verified provides no protection; builds can still violate core principles without anyone noticing
+**Blocks anything current:** No — but should be resolved before the next tool is built
+**Rough effort:** Small
 **Logged:** 2026-05-29
-**Resolved:** 2026-06-03
+**Reopened:** 2026-06-03
 
 **Problem:**
-There is no formal pre-build checklist that Charlie references before starting any Claude Code task. Established principles (hub-and-spokes architecture, data minimalism, human approval before action) and data architecture decisions should be consulted before every build, not just when Jonathan happens to re-state them. The SQLite disclosure failure (BUG-001) is a direct example of what happens without this.
+The pre-build checklist now exists as Principle 11 in `principles.md`. But documentation alone is not enforcement. CLAUDE.md instructs Claude Code to read `principles.md` before any action — but nothing prevents it from reading Principle 11 and silently ignoring it. The checklist is assumed to be consulted; it is never verified.
 
-Additionally, Claude Code tasks currently have broad file access by default with no scoping constraints. If a task prompt doesn't explicitly list which files are off-limits or read-only, Claude Code will modify whatever it deems relevant — even files entirely outside the task's intent. On 2026-05-29, a diagnostic task focused on debugging /meta silently rewrote bugs.md from scratch, wiping BUG-002 through BUG-005. The data was only recovered because the loss was noticed and git history was available.
+The original problem (builds violating core principles without detection) remains unsolved. Additionally, Claude Code tasks currently have broad file access by default with no scoping constraints. On 2026-05-29, a diagnostic task focused on debugging /meta silently rewrote bugs.md from scratch, wiping BUG-002 through BUG-005.
 
-**Resolution:**
-Checklist formalised as Principle 11 in `principles.md`. All builds must consult `principles.md` before starting. The checklist is now the canonical source and includes a testing plan requirement and a system document update check. BUG-006 references `principles.md` (Principle 11) as the authoritative location.
+**What needs fixing:**
+1. Claude Code must explicitly output its answers to the Principle 11 checklist at the start of every build task, before any code is written.
+2. Charlie must verify that checklist answers are present and complete before making the `run_claude_code` call.
+3. This makes the checklist visible and auditable — not just assumed.
+
+**Why this was incorrectly closed:**
+BUG-006 was closed on 2026-06-03 when Principle 11 was added to `principles.md`. That resolved the absence of a written checklist, but not the absence of an enforcement mechanism. The distinction matters: a checklist that Claude Code can read and ignore is not meaningfully different from no checklist. Closing the bug conflated documentation with enforcement.
 
 **Touches:**
-`principles.md` (Principle 11 — Pre-Build Checklist)
+`principles.md` (Principle 11 — Pre-Build Checklist), `core/tools/claude_code.py` (pre-call verification), Charlie system prompt or tool logic (checklist gate)
 
 ---
 

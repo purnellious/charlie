@@ -3,6 +3,7 @@
 A shared record of significant changes. Both Claude Code and Charlie read this.
 Newest entries at the top.
 
+2026-06-03: Reopened BUG-006 — checklist exists in principles.md but enforcement mechanism not yet built; checklist answers must be explicitly output before each build
 2026-06-03: System doc alignment pass — fixed CLAUDE.md (Principle 8→11, agent.py description updated); closed BUG-005 (principles.md live and loaded); updated BUG-003 (data-architecture.md now exists); added BUG-009/010 separator in bugs.md
 2026-06-03: Updated principles.md — revised to 12 principles including Security, Testing, expanded Foresight/Scope/Approval rules; updated BUG-006 and BUG-004 accordingly
 2026-06-03: Created principles.md — 10 core design principles for Charlie; to be loaded into Claude Code and agent system prompt
