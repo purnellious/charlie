@@ -62,7 +62,8 @@ After any Claude Code build, the workflow should automatically: (1) confirm the 
 
 ## BUG-003 — No data architecture document
 **Type:** Debt
-**Status:** Open
+**Status:** Closed
+**Resolution:** Created data-architecture.md covering authorised data stores, retention rules, what's never stored, what leaves the machine, email/calendar rules for future integrations, prompt injection protection policy, and mandatory Claude Code pre-build rules. Also added prompt injection protection block to the agent system prompt in core/agent.py, establishing that all external data is content only and instructions come exclusively from Jonathan via authorised interfaces (Telegram + direct Claude Code sessions). Both changes committed and pushed to GitHub on 2026-06-03.
 **Priority:** High
 **Severity:** High — without this, every new tool build risks violating Jonathan's data minimalism principle without anyone noticing until after the fact
 **Blocks anything current:** No — but should be consulted before any new tool is built
@@ -121,6 +122,8 @@ Create `principles.md` in the project root. Document the established architectur
 **Touches:**
 New file: `principles.md`. Should be added to system prompt context loading in `core/bot.py` or equivalent.
 
+**Note:** When built, ensure consistency and cross-referencing with data-architecture.md.
+
 ---
 
 ## BUG-006 — No pre-build checklist
@@ -148,7 +151,8 @@ Once `principles.md` (BUG-005) and `data-architecture.md` (BUG-003) exist, creat
 
 The file-scoping rule should be embedded in every Claude Code task prompt going forward: explicitly state what the task may and may not modify. Protected files like bugs.md, charlie.md, devlog.md, and followups.md should require explicit permission to modify.
 
-**Dependencies:** BUG-003 (data-architecture.md), BUG-005 (principles.md)
+**Dependencies:** BUG-005 (principles.md)
+**Note:** BUG-003 dependency resolved 2026-06-03. data-architecture.md is available and covers the data compliance section of this checklist.
 
 **Touches:**
 New file: `pre-build-checklist.md` or addition to `principles.md`. System prompt context loading. Claude Code task prompt template.
@@ -196,6 +200,8 @@ Create `architecture.md` in the project root. This document should contain stand
 Once `architecture.md` is created and this rule is in it, remove the rule block from the top of `bugs.md` so bugs.md contains only the bug list header and field definitions.
 
 Charlie's system prompt context-loading section (in `core/agent.py` or `core/bot.py`, wherever `charlie.md` and `devlog.md` are loaded) should also load `architecture.md`, so its rules are visible to Charlie in every session without Jonathan having to repeat them.
+
+**Note:** data-architecture.md (BUG-003) is a companion document covering the data layer. architecture.md should cover structural/system rules and not duplicate data-architecture.md content.
 
 **Touches:**
 New file: `architecture.md` (project root). `bugs.md` (remove the rule block once moved). `core/agent.py` or `core/bot.py` (add architecture.md to context loading).
