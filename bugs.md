@@ -66,15 +66,16 @@ After any Claude Code build, the workflow should automatically: (1) confirm the 
 **Blocks anything current:** No — but should be consulted before any new tool is built
 **Rough effort:** Small
 **Logged:** 2026-05-29
+**Updated:** 2026-06-03
 
 **Problem:**
 Jonathan has strong, clearly stated preferences about data minimalism and privacy — only store what's necessary, nothing persisted beyond its purpose, sensitive data never leaving local systems unnecessarily. Despite this, the SQLite persistent history was built and growing without Jonathan knowing. There is no document that records what is stored, where, for how long, and what the deletion policy is. This means data decisions are being made implicitly rather than deliberately.
 
-**What needs fixing:**
-Create `data-architecture.md` in the project root. It should record: every data store in the system (what it is, where it lives, what it contains), retention policy for each, deletion logic (or lack thereof), and whether anything leaves the local machine (and to which external APIs). This document should be reviewed and updated before any new tool is built that involves storing or transmitting data.
+**Status note:**
+`data-architecture.md` was created on 2026-06-03. It documents authorised data stores, retention policies, what leaves the machine, prompt injection protection, and mandatory rules for Claude Code before any data-touching build. The document is active and should be reviewed and updated whenever a new tool is built. The retention policy item (linked to BUG-001) is still unresolved and noted in the document.
 
 **Touches:**
-New file: `data-architecture.md`. Relevant to all future tool builds.
+`data-architecture.md` (exists; requires ongoing maintenance as new tools are added). Relevant to all future tool builds.
 
 ---
 
@@ -105,21 +106,22 @@ Additionally, /meta's scope is currently limited to evaluating whether `charlie.
 
 ## BUG-005 — No design principles document
 **Type:** Debt
-**Status:** Open
+**Status:** Closed
 **Priority:** High
 **Severity:** High — without written principles, architectural decisions are made ad hoc and Jonathan has to re-state his preferences every time rather than them being baked into how Charlie operates
 **Blocks anything current:** No — but affects every future build and design decision
 **Rough effort:** Small
 **Logged:** 2026-05-29
+**Resolved:** 2026-06-03
 
 **Problem:**
 Several core principles have been clearly established through conversation: (1) hub-and-spokes architecture — Charlie is the agent, tools are discrete spokes, (2) data minimalism — store only what's necessary, nothing persisted beyond its purpose, (3) human approval before action — Charlie never acts autonomously on recommendations without Jonathan's sign-off, (4) lightweight and efficient — no sprawling databases or unnecessary complexity. None of these are written down. They exist only in conversation history. This means they can be violated accidentally on any build, and Charlie cannot reliably consult them.
 
-**What needs fixing:**
-Create `principles.md` in the project root. Document the established architectural and operational principles explicitly. This file should be loaded into Charlie's system prompt context (alongside charlie.md and devlog.md) so that principles are consulted automatically on every build decision, not just when Jonathan happens to re-state them.
+**Resolution:**
+`principles.md` was created on 2026-06-03 with 12 principles covering: hub-and-spokes architecture, data minimalism, human approval, honesty, cost-consciousness, design foresight, explicitness, security, testing, scope discipline, pre-build checklist, and living law. It is loaded into Charlie's system prompt as the first context section (before charlie.md), and is listed as required reading in CLAUDE.md before any Claude Code action.
 
 **Touches:**
-New file: `principles.md`. Should be added to system prompt context loading in `core/bot.py` or equivalent.
+`principles.md` (exists; loaded into agent system prompt in `core/agent.py`).
 
 ---
 
@@ -209,3 +211,26 @@ When the scheduler creates a topic and sends its opening message, also write a s
 
 **Touches:**
 `core/scheduler.py`, `core/db.py` (new `pending_context` table or equivalent), `core/agent.py` or `core/bot.py` (check for handoff on topic load).
+
+---
+
+## BUG-010 — Diagnostics / health-check tool missing
+**Type:** Debt
+**Status:** Open
+**Priority:** Low
+**Severity:** Low — no active failure, but silent component failures currently go undetected until noticed manually
+**Blocks anything current:** No
+**Rough effort:** Medium
+**Logged:** 2026-06-03
+**Topic ID:** 748
+
+**Problem:**
+There is no way to quickly check whether all Charlie components are running correctly. If the scheduler silently dies, the bot stops responding, the DB becomes inaccessible, or the agent errors on startup, Jonathan has no visibility until he notices something is missing. Silent failures are the hardest to catch.
+
+**What needs fixing:**
+Build a /health or /status command in Telegram that checks all critical components and reports their status: (1) Telegram bot — responsive, (2) APScheduler — running and jobs registered, (3) SQLite DB — accessible and readable, (4) Agent — can instantiate and reach Anthropic API, (5) Key files present — charlie.md, principles.md, context-archive.md, followups.md. Output should be a clear pass/fail per component with any error detail surfaced. Consider also adding an automated silent check on a daily or hourly schedule that alerts Jonathan if anything is down.
+
+**Touches:**
+TBD
+
+---

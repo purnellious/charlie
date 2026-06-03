@@ -4,7 +4,7 @@
 
 Before making any change to this project, read these three files in full:
 
-1. **`principles.md`** — the non-negotiable design principles governing how Charlie is built. Every build decision must comply. Use the Pre-Build Checklist (Principle 8) before starting any new feature.
+1. **`principles.md`** — the non-negotiable design principles governing how Charlie is built. Every build decision must comply. Use the Pre-Build Checklist (Principle 11) before starting any new feature.
 2. **`bugs.md`** — current open bugs and their status. Do not build something that duplicates or conflicts with an open bug.
 3. **`devlog.md`** — recent changes. Understand what has changed before making further changes.
 
@@ -51,11 +51,12 @@ to `core/agent.py`. Handles voice transcription, charlie.md update approvals, an
 morning briefing scheduler. Each topic is an independent conversation.
 
 **`core/agent.py`** — The Charlie agent. Calls Claude Sonnet with:
-- A system prompt built from `charlie.md` + Charlie's personality
+- A system prompt built from `principles.md` (loaded first, as the governing rules), then `charlie.md`, `devlog.md`, and `context-archive.md`
 - Extended thinking (budget_tokens configurable via env)
 - Tool definitions from the `TOOLS` list
 Thinking blocks are sent to Telegram as `| ... |` messages before the response.
 Returns updated message history + any proposed charlie.md update.
+Missing context files fail silently — load proceeds without them.
 
 **`core/history.py`** — SQLite-backed conversation history, keyed by topic_id.
 Thinking blocks are stripped before storage (they don't persist across sessions).
