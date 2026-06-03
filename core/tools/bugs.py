@@ -89,6 +89,23 @@ def get_bug_by_id(bug_id: str) -> dict | None:
 # Writing
 # ---------------------------------------------------------------------------
 
+def clear_bug_topic_id(bug_id: str):
+    """Remove the Topic ID field from a bug entry."""
+    lines = BUGS_PATH.read_text().splitlines()
+    result = []
+    in_bug = False
+    for line in lines:
+        if line.startswith(f'## {bug_id} — '):
+            in_bug = True
+        elif re.match(r'^## BUG-\d+', line):
+            in_bug = False
+        if in_bug and line.startswith('**Topic ID:**'):
+            continue  # strip the stale topic_id
+        result.append(line)
+    BUGS_PATH.write_text('\n'.join(result))
+    log.info(f"Cleared topic_id for {bug_id}")
+
+
 def set_bug_topic_id(bug_id: str, topic_id: int):
     """Add or update the Topic ID field in a bug entry."""
     lines = BUGS_PATH.read_text().splitlines()
@@ -267,5 +284,64 @@ async def create_topics_for_all_open_bugs() -> list[str]:
             await asyncio.sleep(0.5)  # avoid Telegram rate limiting
         except Exception as e:
             log.error(f"Failed to create topic for {bug['bug_id']}: {e}")
+
+    return created
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation
+# ---------------------------------------------------------------------------
+
+async def _topic_exists(bot, group_id: str, topic_id: int) -> bool:
+    """Return True if the Telegram forum topic still exists."""
+    from telegram.error import BadRequest
+    try:
+        await bot.reopen_forum_topic(chat_id=group_id, message_thread_id=topic_id)
+        return True  # was closed; now reopened — topic exists
+    except BadRequest as e:
+        err = str(e).lower()
+        if "topic_not_modified" in err or "not modified" in err:
+            return True  # already open — topic exists
+        return False  # thread not found or invalid
+    except Exception:
+        return False
+
+
+async def reconcile_bug_topics(bot, group_id: str) -> list[str]:
+    """
+    Ensure every open bug has a live Telegram topic.
+    - Bugs with no topic_id: create one.
+    - Bugs with a stale topic_id (topic deleted): clear and recreate.
+    Returns list of bug IDs that had topics created or recreated.
+    """
+    bugs = parse_bugs()
+    open_bugs = [b for b in bugs if b.get('status') == 'Open']
+    created = []
+
+    for bug in open_bugs:
+        raw_topic_id = bug.get('topic_id')
+
+        if not raw_topic_id:
+            # No topic at all — create one
+            log.info(f"{bug['bug_id']} has no topic — creating")
+            try:
+                await create_bug_topic(bug)
+                created.append(bug['bug_id'])
+            except Exception as e:
+                log.error(f"Failed to create topic for {bug['bug_id']}: {e}")
+            await asyncio.sleep(0.5)
+        else:
+            # Has a topic_id — verify it still exists
+            topic_id = int(raw_topic_id)
+            if not await _topic_exists(bot, group_id, topic_id):
+                log.warning(f"Topic {topic_id} for {bug['bug_id']} is gone — recreating")
+                clear_bug_topic_id(bug['bug_id'])
+                fresh_bug = get_bug_by_id(bug['bug_id'])
+                try:
+                    await create_bug_topic(fresh_bug)
+                    created.append(bug['bug_id'])
+                except Exception as e:
+                    log.error(f"Failed to recreate topic for {bug['bug_id']}: {e}")
+                await asyncio.sleep(0.5)
 
     return created

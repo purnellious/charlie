@@ -112,6 +112,21 @@ async def _create_checkin(app: Application):
         log.error(f"Check-in creation failed: {e}")
 
 
+async def _reconcile_bug_topics(app: Application):
+    group_id = os.getenv("TELEGRAM_GROUP_ID", "").strip()
+    if not group_id:
+        return
+    try:
+        from core.tools.bugs import reconcile_bug_topics
+        recreated = await reconcile_bug_topics(app.bot, group_id)
+        if recreated:
+            log.info(f"Bug topic reconciliation recreated: {', '.join(recreated)}")
+        else:
+            log.info("Bug topic reconciliation: all topics intact.")
+    except Exception as e:
+        log.error(f"Bug topic reconciliation failed: {e}")
+
+
 async def setup_scheduler(app: Application):
     group_id = os.getenv("TELEGRAM_GROUP_ID", "").strip()
     if not group_id:
@@ -141,10 +156,18 @@ async def setup_scheduler(app: Application):
         minute=checkin_minute,
         args=[app],
     )
+    scheduler.add_job(
+        _reconcile_bug_topics,
+        trigger="cron",
+        hour=3,
+        minute=0,
+        args=[app],
+    )
     scheduler.start()
 
     log.info(f"Morning briefing scheduled for {briefing_time} ({timezone}) daily.")
     log.info(f"Check-in scheduled for {checkin_time} ({timezone}) daily.")
+    log.info(f"Bug topic reconciliation scheduled for 03:00 ({timezone}) daily.")
     app.bot_data["scheduler"] = scheduler
 
 

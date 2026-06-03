@@ -46,6 +46,16 @@ PENDING_DISTIL: dict[int, dict] = {}
 ACTIVE_TOPICS: set[int] = set()
 
 
+async def send_and_save(bot, topic_id: int, text: str):
+    """Send a message to Telegram and save it to conversation history as an assistant message."""
+    await bot.send_message(
+        chat_id=GROUP_ID,
+        text=text,
+        message_thread_id=topic_id,
+    )
+    save_message(topic_id, "assistant", text)
+
+
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
@@ -66,11 +76,11 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             from core.transcribe import transcribe_voice
             user_text = await transcribe_voice(audio_bytes)
             if not user_text:
-                await update.message.reply_text("Couldn't make out that voice message.")
+                await send_and_save(context.bot, topic_id, "Couldn't make out that voice message.")
                 return
         except Exception as e:
             log.error(f"Transcription failed: {e}")
-            await update.message.reply_text("Voice transcription failed — try again or type it.")
+            await send_and_save(context.bot, topic_id, "Voice transcription failed — try again or type it.")
             return
     elif update.message.text:
         user_text = update.message.text
@@ -87,19 +97,19 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             PENDING_DISTIL.pop(topic_id)
             if distillate != "NOTHING_TO_KEEP":
                 _append_to_context_archive(distillate)
-                await update.message.reply_text("Saved to context-archive.md. Conversation history deleted.")
+                await send_and_save(context.bot, topic_id, "Saved to context-archive.md. Conversation history deleted.")
             else:
-                await update.message.reply_text("Nothing to archive. Conversation history deleted.")
+                await send_and_save(context.bot, topic_id, "Nothing to archive. Conversation history deleted.")
             delete_topic_history(topic_id)
             return
         elif response_lower == "discard":
             PENDING_DISTIL.pop(topic_id)
             delete_topic_history(topic_id)
-            await update.message.reply_text("Conversation history deleted. Nothing archived.")
+            await send_and_save(context.bot, topic_id, "Conversation history deleted. Nothing archived.")
             return
         elif response_lower == "reject":
             PENDING_DISTIL.pop(topic_id)
-            await update.message.reply_text("Distillation rejected. History kept — run /distil again if you want to retry.")
+            await send_and_save(context.bot, topic_id, "Distillation rejected. History kept — run /distil again if you want to retry.")
             return
 
     # Handle approve/reject for pending charlie.md update proposals
@@ -108,16 +118,20 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if response_lower in ("approve", "yes", "ok", "save"):
             update_data = PENDING_UPDATES.pop(topic_id)
             _write_charlie_doc(update_data["proposed_content"])
-            await update.message.reply_text("charlie.md updated.")
+            await send_and_save(context.bot, topic_id, "charlie.md updated.")
             return
         elif response_lower in ("reject", "no", "skip", "discard"):
             PENDING_UPDATES.pop(topic_id)
-            await update.message.reply_text("Update discarded.")
+            await send_and_save(context.bot, topic_id, "Update discarded.")
             return
 
     # Prevent overlapping turns in the same topic
     if topic_id in ACTIVE_TOPICS:
-        await update.message.reply_text("Still thinking — please wait.")
+        await context.bot.send_message(
+            chat_id=GROUP_ID,
+            text="Still thinking — please wait.",
+            message_thread_id=topic_id,
+        )
         return
 
     ACTIVE_TOPICS.add(topic_id)
@@ -153,7 +167,7 @@ async def _run_charlie_turn(update, context, topic_id: int, user_text: str):
         )
     except Exception as e:
         log.error(f"Agent error in topic {topic_id}: {e}")
-        await send_fn(f"Something went wrong — {e}")
+        await send_and_save(context.bot, topic_id, f"Something went wrong — {e}")
         return
 
     # Save the new messages (user message + assistant turn(s))
@@ -167,12 +181,13 @@ async def _run_charlie_turn(update, context, topic_id: int, user_text: str):
         preview = proposed_update["proposed_content"]
         if len(preview) > 800:
             preview = preview[:800] + "\n...[truncated]"
-        await send_fn(
+        proposal_text = (
             f"Proposed update to charlie.md\n\n"
             f"Reason: {proposed_update['reason']}\n\n"
             f"---\n{preview}\n---\n\n"
             f"Reply 'approve' to save or 'reject' to discard."
         )
+        await send_and_save(context.bot, topic_id, proposal_text)
 
 
 async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -189,17 +204,12 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("/meta only works inside a topic.")
         return
 
-    async def send(text: str):
-        try:
-            await context.bot.send_message(
-                chat_id=GROUP_ID,
-                text=text,
-                message_thread_id=topic_id,
-            )
-        except Exception as e:
-            log.warning(f"Meta send failed: {e}")
-
-    await send("Running meta-review — one moment...")
+    # Ephemeral status — not saved
+    await context.bot.send_message(
+        chat_id=GROUP_ID,
+        text="Running meta-review — one moment...",
+        message_thread_id=topic_id,
+    )
 
     # Load conversation history before anything is saved to DB
     history = load_history(topic_id)
@@ -210,12 +220,12 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         review = await run_meta_review(topic_id)
     except Exception as e:
         log.error(f"Meta review failed for topic {topic_id}: {e}")
-        await send(f"Meta review failed: {e}")
+        await send_and_save(context.bot, topic_id, f"Meta review failed: {e}")
         return
 
     chunk_size = 4000
     for i in range(0, len(review), chunk_size):
-        await send(review[i:i + chunk_size])
+        await send_and_save(context.bot, topic_id, review[i:i + chunk_size])
 
     # Step 3: Charlie reacts with full conversation history + meta review as final user message
     charlie_instruction = (
@@ -233,7 +243,11 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not label_sent and not text.startswith("| "):
             text = "**Charlie's take:**\n\n" + text
             label_sent = True
-        await send(text)
+        await context.bot.send_message(
+            chat_id=GROUP_ID,
+            text=text,
+            message_thread_id=topic_id,
+        )
 
     try:
         from core.agent import handle_turn
@@ -255,15 +269,16 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             preview = proposed_update["proposed_content"]
             if len(preview) > 800:
                 preview = preview[:800] + "\n...[truncated]"
-            await send(
+            proposal_text = (
                 f"Proposed update to charlie.md\n\n"
                 f"Reason: {proposed_update['reason']}\n\n"
                 f"---\n{preview}\n---\n\n"
                 f"Reply 'approve' to save or 'reject' to discard."
             )
+            await send_and_save(context.bot, topic_id, proposal_text)
     except Exception as e:
         log.error(f"Charlie's take failed for topic {topic_id}: {e}")
-        await send(f"Charlie's take failed: {e}")
+        await send_and_save(context.bot, topic_id, f"Charlie's take failed: {e}")
 
 
 async def on_distil_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -280,31 +295,37 @@ async def on_distil_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("/distil only works inside a topic.")
         return
 
-    await update.message.reply_text("Distilling conversation — one moment...")
+    # Ephemeral status — not saved
+    await context.bot.send_message(
+        chat_id=GROUP_ID,
+        text="Distilling conversation — one moment...",
+        message_thread_id=topic_id,
+    )
 
     try:
         from core.tools.distil import run_distil
         distillate = await run_distil(topic_id)
     except Exception as e:
         log.error(f"Distillation failed for topic {topic_id}: {e}")
-        await update.message.reply_text(f"Distillation failed: {e}")
+        await send_and_save(context.bot, topic_id, f"Distillation failed: {e}")
         return
 
     PENDING_DISTIL[topic_id] = {"distillate": distillate}
 
     if distillate == "NOTHING_TO_KEEP":
-        await update.message.reply_text(
+        proposal_text = (
             "Nothing worth archiving in this conversation.\n\n"
             "Reply 'approve' to delete the history, or 'reject' to keep it."
         )
     else:
         preview = distillate if len(distillate) <= 1200 else distillate[:1200] + "\n...[truncated]"
-        await update.message.reply_text(
+        proposal_text = (
             f"Proposed archive entry:\n\n{preview}\n\n"
             f"'approve' — save to context-archive.md and delete history\n"
             f"'discard' — delete history without saving\n"
             f"'reject' — keep history and try again"
         )
+    await send_and_save(context.bot, topic_id, proposal_text)
 
 
 def _append_to_context_archive(distillate: str):
@@ -331,8 +352,10 @@ async def on_topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     topic = update.message.forum_topic_created
     if topic:
+        topic_id = update.message.message_thread_id
         log.info(f"New topic created: '{topic.name}'")
-        await update.message.reply_text(
+        await send_and_save(
+            context.bot, topic_id,
             f"New topic: {topic.name}. What are we working on?"
         )
 
@@ -341,13 +364,19 @@ async def on_create_bug_topics(update: Update, context: ContextTypes.DEFAULT_TYP
     """/createbugtopics — batch-create Telegram topics for all open bugs without one."""
     if str(update.effective_chat.id) != GROUP_ID:
         return
-    await update.message.reply_text("Creating topics for all open bugs without one...")
+    topic_id = update.message.message_thread_id
+    # Ephemeral status — not saved
+    await context.bot.send_message(
+        chat_id=GROUP_ID,
+        text="Creating topics for all open bugs without one...",
+        message_thread_id=topic_id,
+    )
     from core.tools.bugs import create_topics_for_all_open_bugs
     created = await create_topics_for_all_open_bugs()
     if created:
-        await update.message.reply_text(f"Done. Created topics for: {', '.join(created)}")
+        await send_and_save(context.bot, topic_id, f"Done. Created topics for: {', '.join(created)}")
     else:
-        await update.message.reply_text("No open bugs needed a topic.")
+        await send_and_save(context.bot, topic_id, "No open bugs needed a topic.")
 
 
 async def on_topic_closed(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -365,11 +394,8 @@ async def on_topic_closed(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=GROUP_ID,
                 message_thread_id=topic_id,
             )
-            await context.bot.send_message(
-                chat_id=GROUP_ID,
-                message_thread_id=topic_id,
-                text=f"{bug['bug_id']} is still open — topic reopened. Resolve the bug before closing.",
-            )
+            reopen_text = f"{bug['bug_id']} is still open — topic reopened. Resolve the bug before closing."
+            await send_and_save(context.bot, topic_id, reopen_text)
             log.info(f"Reopened topic {topic_id} for unresolved {bug['bug_id']}")
         except Exception as e:
             log.error(f"Failed to reopen topic {topic_id}: {e}")
