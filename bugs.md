@@ -26,6 +26,7 @@ Open issues to be worked through over time. Newest bugs at the bottom.
 **Blocks anything current:** No — but will become a cost and privacy problem over time
 **Rough effort:** Medium
 **Logged:** 2026-05-29
+**Topic ID:** 567
 
 **Problem:**
 All messages (user and assistant) are stored in `data/charlie.db` with no expiry, cleanup, or deletion logic. The database grows forever. This means: (1) sensitive conversation data accumulates indefinitely on disk, (2) the full history is passed to the Claude API on every message in a topic, increasing cost and latency over time, and (3) it directly contradicts the design principle of keeping Charlie lightweight and data-minimal. This was not surfaced to Jonathan until after the Meta tool was built — it should have been caught at design stage.
@@ -46,6 +47,7 @@ Decide on and implement a retention policy. Options: auto-delete after N days, t
 **Blocks anything current:** No — but affects every future build
 **Rough effort:** Small
 **Logged:** 2026-05-29
+**Topic ID:** 569
 
 **Problem:**
 After a Claude Code build, Charlie announces completion without verifying the service is actually running the new code. In the /meta build, the bot process was running a pre-deployment version and hadn't been restarted — Charlie said "Built and live" and invited Jonathan to test it, and it failed immediately. Announcing completion prematurely is worse than saying nothing.
@@ -66,6 +68,7 @@ After any Claude Code build, the workflow should automatically: (1) confirm the 
 **Blocks anything current:** No — but should be consulted before any new tool is built
 **Rough effort:** Small
 **Logged:** 2026-05-29
+**Topic ID:** 571
 
 **Problem:**
 Jonathan has strong, clearly stated preferences about data minimalism and privacy — only store what's necessary, nothing persisted beyond its purpose, sensitive data never leaving local systems unnecessarily. Despite this, the SQLite persistent history was built and growing without Jonathan knowing. There is no document that records what is stored, where, for how long, and what the deletion policy is. This means data decisions are being made implicitly rather than deliberately.
@@ -86,6 +89,7 @@ New file: `data-architecture.md`. Relevant to all future tool builds.
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-05-29
+**Topic ID:** 573
 
 **Problem:**
 The /meta tool makes a fresh Claude call with a specific system prompt instructing it to be ruthless, use three categories, and focus on actionable improvements. This prompt is hardcoded in `core/tools/meta.py` but is not documented or visible anywhere outside the code. The prompt itself should be subject to review and iteration — including via the /meta process itself — but can't be meaningfully reviewed if it's buried in source code.
@@ -106,6 +110,7 @@ Extract the meta review prompt into a standalone readable file — e.g. `core/to
 **Blocks anything current:** No — but affects every future build and design decision
 **Rough effort:** Small
 **Logged:** 2026-05-29
+**Topic ID:** 575
 
 **Problem:**
 Several core principles have been clearly established through conversation: (1) hub-and-spokes architecture — Charlie is the agent, tools are discrete spokes, (2) data minimalism — store only what's necessary, nothing persisted beyond its purpose, (3) human approval before action — Charlie never acts autonomously on recommendations without Jonathan's sign-off, (4) lightweight and efficient — no sprawling databases or unnecessary complexity. None of these are written down. They exist only in conversation history. This means they can be violated accidentally on any build, and Charlie cannot reliably consult them.
@@ -126,6 +131,7 @@ New file: `principles.md`. Should be added to system prompt context loading in `
 **Blocks anything current:** No — but should be in place before the next tool is built
 **Rough effort:** Small (once BUG-003 and BUG-005 are resolved)
 **Logged:** 2026-05-29
+**Topic ID:** 577
 
 **Problem:**
 There is no formal pre-build checklist that Charlie references before starting any Claude Code task. Established principles (hub-and-spokes architecture, data minimalism, human approval before action) and data architecture decisions should be consulted before every build, not just when Jonathan happens to re-state them. The SQLite disclosure failure (BUG-001) is a direct example of what happens without this.
@@ -157,6 +163,7 @@ New file: `pre-build-checklist.md` or addition to `principles.md`. System prompt
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-05-29
+**Topic ID:** 579
 
 **Problem:**
 During longer conversations, multiple tasks, open questions, and action items accumulate. There is no mechanism for Charlie to track what's been raised but not yet resolved within a session. This leads to items being dropped — for example, the /meta option 2 fix was agreed upon but not built until Jonathan re-raised it later in the conversation.
@@ -203,6 +210,7 @@ New file: `architecture.md` (project root). `bugs.md` (remove the rule block onc
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-05-30
+**Topic ID:** 582
 
 **Problem:**
 When the scheduler creates a Telegram topic and sends an opening message, the main agent has no structured way to know the topic was scheduler-created or what task it relates to. If the DB write is missed or ordered incorrectly, the agent loses context entirely and must infer its purpose from message history order — which is fragile.
@@ -212,3 +220,24 @@ When the scheduler creates a topic and sends its opening message, also write a s
 
 **Touches:**
 `core/scheduler.py`, `core/db.py` (new `pending_context` table or equivalent), `core/agent.py` or `core/bot.py` (check for handoff on topic load).
+
+## BUG-010 — /meta over-critiques trivial interactions
+**Type:** Bug
+**Status:** Open
+**Priority:** Low
+**Severity:** Low — degrades signal quality but not a functional failure
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-06-03
+**Topic ID:** 620
+
+**Problem:**
+/meta applies the same level of critical scrutiny regardless of conversation size or substance. On a two-line check-in it generates a full critique with multiple sections, producing noise rather than insight. The feedback is not calibrated to the stakes of the interaction.
+
+**What needs fixing:**
+Update the /meta prompt to be ruthless but rational — feedback should be proportionate to the substance of the conversation. If there's nothing meaningful to critique, it should say so briefly rather than manufacturing issues. Add guidance: don't critique for the sake of it; only surface observations that would actually change behaviour.
+
+**Touches:**
+TBD
+
+---
