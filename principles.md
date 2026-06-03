@@ -8,14 +8,14 @@
 
 ## 1. Hub-and-Spokes Architecture
 
-Charlie is the reasoning layer. Tools are discrete, single-purpose spokes.
+Charlie is the reasoning layer. Tools are discrete, single-purpose spokes. The agent orchestrates; tools execute.
 
 - The agent (Charlie) makes decisions, synthesises context, and communicates with Jonathan
 - Tools do one thing each — they do not contain logic that belongs in the agent
-- Tools do not call each other; the agent orchestrates
+- **Tools do not call other tools directly.** The agent may call multiple tools in sequence or combination to complete an action — that is expected and correct. What is prohibited is a tool internally invoking another tool, creating hidden dependencies.
 - New capabilities are added as new spokes, not by expanding existing ones
 
-**Violation signal:** A tool that makes decisions, or a tool that calls another tool.
+**Violation signal:** A tool that makes decisions, or a tool whose implementation calls another tool.
 
 ---
 
@@ -26,7 +26,7 @@ Store only what is necessary. Nothing is persisted beyond its purpose.
 - Do not log, store, or cache data unless there is a clear, stated reason to do so
 - Sensitive information (legal, financial, personal) gets extra scrutiny before any persistence decision
 - When in doubt, don't store it
-- Retention periods should be considered at design time, not as an afterthought
+- Retention periods must be considered at design time, not as an afterthought
 
 **Violation signal:** Data being written to disk or DB "just in case" or for convenience.
 
@@ -34,11 +34,28 @@ Store only what is necessary. Nothing is persisted beyond its purpose.
 
 ## 3. Human Approval Before Consequential Action
 
-Charlie proposes. Jonathan approves. Charlie does not act unilaterally on anything consequential.
+Charlie proposes. Jonathan approves. Consequential actions do not proceed without explicit approval.
 
-- Sending external communications, making purchases, modifying files outside Charlie's own directory, or taking any irreversible action requires explicit approval
-- Approval flows must be designed before the feature is built, not bolted on afterward
-- "Consequential" is interpreted broadly when in doubt
+Approval is determined by **reversibility and blast radius**:
+
+**Always requires explicit approval:**
+- Sending any external communication (email, message, notification to a third party)
+- Financial transactions of any kind
+- Deleting data
+- Modifying files outside Charlie's own directory
+- Any action that affects a third party
+
+**Requires a confirmation prompt:**
+- Writing to files inside Charlie's directory that weren't just created in the same session
+- Scheduling or modifying recurring actions
+- Any change to system state that would persist beyond the current session
+
+**Can proceed without approval:**
+- Read-only operations
+- In-session computations and reasoning
+- Generating drafts (not sending them)
+
+Approval flows must be designed before a feature is built, not bolted on afterward. If the blast radius of an action is unclear, treat it as requiring explicit approval.
 
 **Violation signal:** A feature that acts on the world without a documented approval step.
 
@@ -70,16 +87,16 @@ Every cost requires justification. Convenience is not justification.
 
 ---
 
-## 6. Simplicity Over Cleverness
+## 6. Design with Foresight, Build with Discipline
 
-The simplest solution that works is the right solution.
+Charlie is heading toward becoming Jonathan's single operational hub. Every build should keep that destination in mind — but should not build the future before it arrives.
 
-- Do not over-engineer. Do not add abstraction layers in anticipation of future needs that may never arrive.
-- If a feature can be built with existing tools, don't introduce a new dependency
-- Complexity must earn its place — it is a liability until proven otherwise
-- Readable, obvious code over clever, compact code
+- Design decisions (interfaces, data models, architecture) should be made with the long-term goal in mind, so future extensions don't require rewrites
+- Implementation should be scoped to what is needed now — do not implement abstractions until they are needed
+- Foresight belongs in design; discipline belongs in scope
+- When a design choice would make future growth easier at little current cost, prefer it. When it would add significant complexity for a speculative future, defer it.
 
-**Violation signal:** Architecture that requires explanation before it can be understood.
+**Violation signal:** Significant complexity added today for a future that hasn't been confirmed; or short-sighted design that will require a rewrite when the next logical feature lands.
 
 ---
 
@@ -95,32 +112,65 @@ State assumptions. Don't rely on things being inferred correctly.
 
 ---
 
-## 8. Pre-Build Checklist (from BUG-006)
+## 8. Security by Default
 
-Before building any new feature, Claude Code must confirm:
+Charlie handles sensitive legal, financial, and personal information. Security is not an afterthought.
+
+- No sensitive data (API keys, credentials, personal information) stored in plaintext or committed to git
+- No third-party service receives Jonathan's data unless Jonathan has explicitly approved that integration
+- Principle of least privilege: tools and services are granted only the access they need to function, nothing more
+- Any external integration must be reviewed for data handling practices before the build starts
+- Secrets are stored in environment variables or a secrets manager, never hardcoded
+
+**Violation signal:** Credentials in source code; data sent to a third party without explicit approval; a service with broader access than its function requires.
+
+---
+
+## 9. Test Before Done
+
+Nothing is complete until it is verified to work. "It should work" is not done.
+
+- Claude Code must test or demonstrate the built thing before declaring completion
+- Tests must cover the happy path and the most obvious failure cases
+- If a feature cannot be automatically tested, the expected behaviour and manual verification steps must be documented
+- Regressions — breaking something that previously worked — must be caught before handoff
+- The pre-build checklist must include a testing plan
+
+**Violation signal:** A build declared complete without evidence it was tested; a regression introduced without detection.
+
+---
+
+## 10. Scope Discipline
+
+Build what was asked. Surface what you find. Don't act beyond your mandate.
+
+- Do not add unrequested features, even if they seem obviously useful — propose them instead
+- If unexpected issues are found during a build, **surface them** — do not silently act on them unless they are directly in the path of the task and leaving them would break it
+- "While I was in there..." changes that weren't raised with Jonathan are a violation
+- Scope additions must be proposed and approved before implementation
+
+**Violation signal:** A build that delivers more than was specified without prior discussion; unexpected findings acted on silently rather than flagged.
+
+---
+
+## 11. Pre-Build Checklist
+
+Before building any new feature, Claude Code must work through this checklist. The build does not start until all items are addressed.
 
 - [ ] What problem does this solve?
 - [ ] Does a simpler solution exist?
 - [ ] What data will be stored, and why?
 - [ ] Is there an approval step if the action is consequential?
 - [ ] What is the cost (money, complexity, maintenance)?
-- [ ] Does this comply with the principles above?
+- [ ] Does this comply with the principles in this document?
+- [ ] What is the testing plan? How will completion be verified?
+- [ ] Does this build require updates to principles.md, charlie.md, or any other system document? If so, those updates must be proposed as part of the build.
+
+This checklist is the canonical source. BUG-006 references this document.
 
 ---
 
-## 9. Scope Discipline
-
-Build what was asked. Nothing more.
-
-- Do not add unrequested features, even if they seem obviously useful
-- Scope additions must be proposed to Jonathan before implementation
-- "While I was in there..." changes are a bug, not a feature
-
-**Violation signal:** A build that delivers more than was specified without prior discussion.
-
----
-
-## 10. Principles Are Living Law
+## 12. Principles Are Living Law
 
 When a new principle is established through conversation, it gets written here.
 

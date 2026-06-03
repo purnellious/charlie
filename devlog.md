@@ -3,6 +3,7 @@
 A shared record of significant changes. Both Claude Code and Charlie read this.
 Newest entries at the top.
 
+2026-06-03: Updated principles.md — revised to 12 principles including Security, Testing, expanded Foresight/Scope/Approval rules; updated BUG-006 and BUG-004 accordingly
 2026-06-03: Created principles.md — 10 core design principles for Charlie; to be loaded into Claude Code and agent system prompt
 2026-06-03: Added daily 3am bug topic reconciliation — detects and recreates deleted bug topics automatically
 2026-06-03: Added retry logic to agent.py for 529 overloaded and 429 rate-limit errors (3 retries: 5s, 15s, 30s)
