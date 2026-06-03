@@ -18,6 +18,7 @@ CHARLIE_ROOT = Path(__file__).parent.parent
 CHARLIE_DOC = CHARLIE_ROOT / "charlie.md"
 DEVLOG = CHARLIE_ROOT / "devlog.md"
 CONTEXT_ARCHIVE = CHARLIE_ROOT / "context-archive.md"
+PRINCIPLES = CHARLIE_ROOT / "principles.md"
 MODEL = os.getenv("CHARLIE_MODEL", "claude-sonnet-4-6")
 MAX_CHUNK = 4000
 
@@ -106,6 +107,12 @@ TOOLS = [
 ]
 
 
+def _load_principles() -> str:
+    if PRINCIPLES.exists():
+        return PRINCIPLES.read_text().strip()
+    return ""
+
+
 def _load_charlie_doc() -> str:
     if CHARLIE_DOC.exists():
         return CHARLIE_DOC.read_text().strip()
@@ -129,11 +136,13 @@ def _load_context_archive() -> str:
 
 
 def _build_system_prompt() -> str:
+    principles = _load_principles()
     charlie_doc = _load_charlie_doc()
     devlog = _load_devlog()
     context_archive = _load_context_archive()
     today = datetime.now().strftime("%A, %d %B %Y")
-    return f"""You are Charlie — Jonathan's personal Chief of Staff and AI assistant.
+    principles_section = f"## Design Principles\n\n{principles}\n\n" if principles else ""
+    return f"""{principles_section}You are Charlie — Jonathan's personal Chief of Staff and AI assistant.
 
 Today is {today}.
 

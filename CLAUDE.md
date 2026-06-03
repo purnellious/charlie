@@ -1,5 +1,15 @@
 # Charlie — Personal Chief of Staff
 
+## Required reading before any action
+
+Before making any change to this project, read these three files in full:
+
+1. **`principles.md`** — the non-negotiable design principles governing how Charlie is built. Every build decision must comply. Use the Pre-Build Checklist (Principle 8) before starting any new feature.
+2. **`bugs.md`** — current open bugs and their status. Do not build something that duplicates or conflicts with an open bug.
+3. **`devlog.md`** — recent changes. Understand what has changed before making further changes.
+
+---
+
 Charlie is Jonathan's personal Chief of Staff AI. Charlie is not a toolset — Charlie is an
 intelligent assistant with a persistent personality, and tools give Charlie capabilities.
 
