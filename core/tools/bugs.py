@@ -293,18 +293,27 @@ async def create_topics_for_all_open_bugs() -> list[str]:
 # ---------------------------------------------------------------------------
 
 async def _topic_exists(bot, group_id: str, topic_id: int) -> bool:
-    """Return True if the Telegram forum topic still exists."""
+    """Return True if the Telegram forum topic still exists.
+
+    Uses unpin_all_forum_topic_messages — idempotent (no visible effect if no pins),
+    but fails with a thread-related error if the topic has been deleted.
+    Fails safe: any unexpected error is treated as the topic existing, to avoid
+    false positives that would create duplicate topics.
+    """
     from telegram.error import BadRequest
     try:
-        await bot.reopen_forum_topic(chat_id=group_id, message_thread_id=topic_id)
-        return True  # was closed; now reopened — topic exists
+        await bot.unpin_all_forum_topic_messages(chat_id=group_id, message_thread_id=topic_id)
+        return True
     except BadRequest as e:
         err = str(e).lower()
-        if "topic_not_modified" in err or "not modified" in err:
-            return True  # already open — topic exists
-        return False  # thread not found or invalid
-    except Exception:
-        return False
+        if "thread" in err or "message_thread" in err:
+            return False  # topic is gone
+        # Unexpected BadRequest (e.g. permissions) — assume exists to avoid duplicates
+        log.warning(f"Unexpected error checking topic {topic_id}: {e}")
+        return True
+    except Exception as e:
+        log.warning(f"Could not verify topic {topic_id}: {e}")
+        return True  # fail safe
 
 
 async def reconcile_bug_topics(bot, group_id: str) -> list[str]:

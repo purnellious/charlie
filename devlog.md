@@ -3,12 +3,12 @@
 A shared record of significant changes. Both Claude Code and Charlie read this.
 Newest entries at the top.
 
+2026-06-03: Added daily 3am bug topic reconciliation — detects and recreates deleted bug topics automatically; also covers open bugs with no topic_id
+2026-06-03: Added retry logic to agent.py for 529 overloaded and 429 rate-limit errors (3 retries: 5s, 15s, 30s)
 2026-06-03: Reopened BUG-006 — checklist exists in principles.md but enforcement mechanism not yet built; checklist answers must be explicitly output before each build
 2026-06-03: System doc alignment pass — fixed CLAUDE.md (Principle 8→11, agent.py description updated); closed BUG-005 (principles.md live and loaded); updated BUG-003 (data-architecture.md now exists); added BUG-009/010 separator in bugs.md
 2026-06-03: Updated principles.md — revised to 12 principles including Security, Testing, expanded Foresight/Scope/Approval rules; updated BUG-006 and BUG-004 accordingly
 2026-06-03: Created principles.md — 10 core design principles for Charlie; to be loaded into Claude Code and agent system prompt
-2026-06-03: Added daily 3am bug topic reconciliation — detects and recreates deleted bug topics automatically
-2026-06-03: Added retry logic to agent.py for 529 overloaded and 429 rate-limit errors (3 retries: 5s, 15s, 30s)
 2026-05-30: Added send_and_save() to bot.py — all substantive bot messages now saved to DB; only ephemeral status messages ("Still thinking...", "one moment...") excluded
 2026-05-30: Fixed scheduler to persist sent messages to DB as assistant messages so agent can see them in history; added architectural rule to bugs.md
 2026-05-29: Added capabilities boundary to system prompt — Claude Code runs on always-on Mac only
