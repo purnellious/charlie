@@ -187,6 +187,7 @@ Charlie should maintain an internal running list of open items during a session 
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-05-30
+**Topic ID:** 902
 
 **Problem:**
 Architectural rules are currently sitting at the top of `bugs.md` (above the bug list itself). This is the wrong home for them — bugs.md is a tracking document, not an architecture reference. Rules mixed into a bug list are harder to find, easier to overlook, and create confusion about what the document is for.
