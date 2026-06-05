@@ -47,6 +47,7 @@ Decide on and implement a retention policy. Options: auto-delete after N days, t
 **Blocks anything current:** No — but affects every future build
 **Rough effort:** Small
 **Logged:** 2026-05-29
+**Topic ID:** 892
 
 **Problem:**
 After a Claude Code build, Charlie announces completion without verifying the service is actually running the new code. In the /meta build, the bot process was running a pre-deployment version and hadn't been restarted — Charlie said "Built and live" and invited Jonathan to test it, and it failed immediately. Announcing completion prematurely is worse than saying nothing.
