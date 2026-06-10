@@ -256,6 +256,7 @@ TBD
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-06-10
+**Topic ID:** 1086
 
 **Problem:**
 After a build completes, Charlie declares it "live" or "done" without running through a post-build checklist. Jonathan never gets confirmation that the tool works end-to-end, doesn't know how to monitor it, and doesn't know what failure looks like. The World Cup Tracker was declared live without Jonathan ever seeing a test Telegram notification arrive.
