@@ -54,7 +54,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Short bug title (one line)."},
-                "type": {"type": "string", "enum": ["Bug", "Debt", "Rule"], "description": "Bug, Debt, or Rule."},
+                "type": {"type": "string", "enum": ["Bug", "Debt", "Rule", "Parked"], "description": "Bug, Debt, Rule, or Parked."},
                 "priority": {"type": "string", "enum": ["High", "Medium", "Low"]},
                 "severity": {"type": "string", "description": "One-line severity description including High/Medium/Low."},
                 "effort": {"type": "string", "enum": ["Small", "Medium", "Large"]},

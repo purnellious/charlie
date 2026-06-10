@@ -9,7 +9,7 @@
 Open issues to be worked through over time. Newest bugs at the bottom.
 
 **Fields per entry:**
-- **Type:** Bug / Debt / Rule
+- **Type:** Bug / Debt / Rule / Parked — Parked means a feature or capability explicitly decided not to build yet, with intention to revisit later
 - **Status:** Open / In Progress / Closed
 - **Priority:** High / Medium / Low
 - **Severity:** High (breaks things or violates core principles) / Medium (creates friction or inefficiency) / Low (nice to have)
