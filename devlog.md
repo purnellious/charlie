@@ -3,6 +3,7 @@
 A shared record of significant changes. Both Claude Code and Charlie read this.
 Newest entries at the top.
 
+2026-06-05: bugs.py now commits and pushes bugs.md to git after every write — topic_ids no longer wiped by rsync
 2026-06-03: Added daily 3am bug topic reconciliation — detects and recreates deleted bug topics automatically; also covers open bugs with no topic_id
 2026-06-03: Added retry logic to agent.py for 529 overloaded and 429 rate-limit errors (3 retries: 5s, 15s, 30s)
 2026-06-03: Reopened BUG-006 — checklist exists in principles.md but enforcement mechanism not yet built; checklist answers must be explicitly output before each build

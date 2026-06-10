@@ -6,6 +6,7 @@ All bug state lives in bugs.md as the single source of truth.
 import asyncio
 import logging
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -14,9 +15,25 @@ from core.history import save_message
 log = logging.getLogger(__name__)
 
 BUGS_PATH = Path(__file__).parent.parent.parent / "bugs.md"
+_GIT_ROOT = str(BUGS_PATH.parent)
 
 # Telegram topic name limit
 MAX_TOPIC_NAME = 128
+
+
+def _commit_bugs_md(message: str):
+    """Commit and push bugs.md so changes survive rsync from the primary Mac."""
+    try:
+        subprocess.run(["git", "add", str(BUGS_PATH)], cwd=_GIT_ROOT, capture_output=True, timeout=10)
+        result = subprocess.run(
+            ["git", "commit", "-m", f"chore: {message}"],
+            cwd=_GIT_ROOT, capture_output=True, text=True, timeout=10,
+        )
+        if "nothing to commit" not in result.stdout:
+            subprocess.run(["git", "push"], cwd=_GIT_ROOT, capture_output=True, timeout=30)
+        log.info(f"bugs.md committed: {message}")
+    except Exception as e:
+        log.warning(f"Could not commit bugs.md: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +121,7 @@ def clear_bug_topic_id(bug_id: str):
         result.append(line)
     BUGS_PATH.write_text('\n'.join(result))
     log.info(f"Cleared topic_id for {bug_id}")
+    _commit_bugs_md(f"Clear topic_id for {bug_id}")
 
 
 def set_bug_topic_id(bug_id: str, topic_id: int):
@@ -135,6 +153,7 @@ def set_bug_topic_id(bug_id: str, topic_id: int):
 
     BUGS_PATH.write_text('\n'.join(result))
     log.info(f"Set topic_id={topic_id} for {bug_id}")
+    _commit_bugs_md(f"Set topic_id={topic_id} for {bug_id}")
 
 
 def close_bug(bug_id: str, resolution: str):
@@ -157,6 +176,7 @@ def close_bug(bug_id: str, resolution: str):
 
     BUGS_PATH.write_text('\n'.join(result))
     log.info(f"Closed {bug_id}")
+    _commit_bugs_md(f"Close {bug_id}")
 
 
 def reopen_bug(bug_id: str):
@@ -181,6 +201,7 @@ def reopen_bug(bug_id: str):
 
     BUGS_PATH.write_text('\n'.join(result))
     log.info(f"Reopened {bug_id}")
+    _commit_bugs_md(f"Reopen {bug_id}")
 
 
 def create_bug_entry(
@@ -220,6 +241,7 @@ TBD
     content = BUGS_PATH.read_text() if BUGS_PATH.exists() else ""
     BUGS_PATH.write_text(content.rstrip('\n') + '\n' + entry)
     log.info(f"Created {bug_id}: {title}")
+    _commit_bugs_md(f"Log {bug_id}: {title}")
     return bug_id
 
 
