@@ -181,7 +181,8 @@ async def check_upcoming_matches(app: Application) -> None:
                     system=(
                         "You are writing a pre-match hype message for a passionate South African "
                         "football fan (Jonathan). Be energetic, warm, and emotionally engaged. "
-                        "Bafana Bafana are his team and he cares deeply. Use the data provided."
+                        "Bafana Bafana are his team and he cares deeply. Use the data provided. "
+                        "Write plain text only — no markdown, no headers, no bullet points."
                     ),
                     user=(
                         f"Write a 4-6 sentence rich match preview covering: what's at stake in the group, "
@@ -211,7 +212,8 @@ async def check_upcoming_matches(app: Application) -> None:
                 preview = await _call_claude(
                     system=(
                         "You are writing a quick pre-match preview for a football fan. "
-                        "Be concise, energetic, and topical. Use the data provided."
+                        "Be concise, energetic, and topical. Use the data provided. "
+                        "Write plain text only — no markdown, no headers, no bullet points."
                     ),
                     user=(
                         f"Write 2-3 sentences of match preview. Data:\n\n{context}"
@@ -278,7 +280,8 @@ async def check_sa_results(app: Application) -> None:
                 system=(
                     "You are writing a post-game message for Jonathan, a passionate South African "
                     "football fan. Be warm, honest, and heartfelt — whether it's a win, draw, or "
-                    "loss. Capture the emotion without being over-the-top."
+                    "loss. Capture the emotion without being over-the-top. "
+                    "Write plain text only — no markdown, no headers, no bullet points."
                 ),
                 user=(
                     f"Write 2-3 sentences summarising this result with heart. Data:\n\n{context}"

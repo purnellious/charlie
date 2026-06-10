@@ -3,6 +3,7 @@
 A shared record of significant changes. Both Claude Code and Charlie read this.
 Newest entries at the top.
 
+2026-06-10: World Cup Phase 2 complete — core/world_cup_scheduler.py: two APScheduler jobs (every 5 min); 60-min Bafana Bafana preview, 30-min standard preview, post-game SA result messages; deduplication via data/wc_notified.json; startup seed prevents replaying old results; plain-text Claude prompts to avoid Telegram markdown issues
 2026-06-10: World Cup Phase 1 complete — core/tools/world_cup.py API tool verified against live API; get_match_context, get_standings_context, get_upcoming_fixtures, is_south_africa_match all working; added defensive error handling to all functions
 2026-06-10: Built World Cup Tracker — pre-game notifications (30min all games, 60min SA games), post-game SA result messages, football-data.org API integration
 2026-06-05: bugs.py now commits and pushes bugs.md to git after every write — topic_ids no longer wiped by rsync
