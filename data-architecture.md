@@ -16,6 +16,7 @@ The following are the only sanctioned persistent stores. Nothing new is added wi
 | `bugs.md` | Bug and debt tracker | Indefinite |
 | `devlog.md` | Change log | Indefinite |
 | `followups.md` | Open chase items | Indefinite |
+| `data/wc_notified.json` | World Cup tracker state — notified match IDs (30-min/60-min/result) and WC Telegram topic ID | Tournament-scoped; can be deleted after the 2026 World Cup ends |
 
 ---
 
@@ -92,4 +93,4 @@ Claude Code must:
 
 ---
 
-*Last updated: 2026-06-03*
+*Last updated: 2026-06-10*

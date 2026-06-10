@@ -3,6 +3,7 @@ Scheduler — manages timed jobs.
 v1: morning briefing only (creates a new Telegram topic each day).
 v2: added daily check-in reminder at configurable time (default 08:00).
 v3: morning briefing includes open follow-up items from followups.md.
+v4: added World Cup 2026 match notification jobs (every 5 minutes).
 """
 
 import logging
@@ -163,11 +164,28 @@ async def setup_scheduler(app: Application):
         minute=0,
         args=[app],
     )
+
+    # World Cup 2026 — match preview and result notifications
+    from core.world_cup_scheduler import check_upcoming_matches, check_sa_results
+    scheduler.add_job(
+        check_upcoming_matches,
+        trigger="interval",
+        minutes=5,
+        args=[app],
+    )
+    scheduler.add_job(
+        check_sa_results,
+        trigger="interval",
+        minutes=5,
+        args=[app],
+    )
+
     scheduler.start()
 
     log.info(f"Morning briefing scheduled for {briefing_time} ({timezone}) daily.")
     log.info(f"Check-in scheduled for {checkin_time} ({timezone}) daily.")
     log.info(f"Bug topic reconciliation scheduled for 03:00 ({timezone}) daily.")
+    log.info("World Cup match notifications scheduled (every 5 minutes).")
     app.bot_data["scheduler"] = scheduler
 
 
