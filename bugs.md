@@ -277,6 +277,7 @@ TBD
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-06-10
+**Topic ID:** 1094
 
 **Problem:**
 During the World Cup Tracker build, post-game result messages were scoped to South Africa games only. The idea of extending post-game messages to all knockout stage games was explicitly discussed and parked — agreed to revisit once the tournament reaches the knockout rounds.
