@@ -268,3 +268,23 @@ Add a mandatory post-build checklist to principles.md (Principle 9 or 11) that C
 TBD
 
 ---
+
+## BUG-012 — World Cup: post-game messages for knockout stage not yet built
+**Type:** Parked
+**Status:** Open
+**Priority:** Low
+**Severity:** Low — missing nice-to-have feature, not a breakage
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-06-10
+
+**Problem:**
+During the World Cup Tracker build, post-game result messages were scoped to South Africa games only. The idea of extending post-game messages to all knockout stage games was explicitly discussed and parked — agreed to revisit once the tournament reaches the knockout rounds.
+
+**What needs fixing:**
+When the knockout stage begins, extend check_sa_results() (or add a new job) to send post-game messages for all knockout matches, not just SA games. SA games already have this. The pattern is built — it just needs to be generalised and the trigger condition changed from SA-only to all matches in knockout stages.
+
+**Touches:**
+TBD
+
+---
