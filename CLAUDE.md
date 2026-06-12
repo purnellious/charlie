@@ -4,7 +4,7 @@
 
 Before making any change to this project, read these three files in full:
 
-1. **`principles.md`** — the non-negotiable design principles governing how Charlie is built. Every build decision must comply. Use the Pre-Build Checklist (Principle 11) before starting any new feature.
+1. **`principles.md`** — the non-negotiable design principles governing how Charlie is built. Every build decision must comply. Use the Pre-Build Checklist (Principle 12) before starting any new feature.
 2. **`bugs.md`** — current open bugs and their status. Do not build something that duplicates or conflicts with an open bug.
 3. **`devlog.md`** — recent changes. Understand what has changed before making further changes.
 

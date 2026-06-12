@@ -141,20 +141,20 @@ Several core principles have been clearly established through conversation: (1) 
 **Reopened:** 2026-06-03
 
 **Problem:**
-The pre-build checklist now exists as Principle 11 in `principles.md`. But documentation alone is not enforcement. CLAUDE.md instructs Claude Code to read `principles.md` before any action — but nothing prevents it from reading Principle 11 and silently ignoring it. The checklist is assumed to be consulted; it is never verified.
+The pre-build checklist now exists as Principle 12 in `principles.md`. But documentation alone is not enforcement. CLAUDE.md instructs Claude Code to read `principles.md` before any action — but nothing prevents it from reading Principle 12 and silently ignoring it. The checklist is assumed to be consulted; it is never verified.
 
 The original problem (builds violating core principles without detection) remains unsolved. Additionally, Claude Code tasks currently have broad file access by default with no scoping constraints. On 2026-05-29, a diagnostic task focused on debugging /meta silently rewrote bugs.md from scratch, wiping BUG-002 through BUG-005.
 
 **What needs fixing:**
-1. Claude Code must explicitly output its answers to the Principle 11 checklist at the start of every build task, before any code is written.
+1. Claude Code must explicitly output its answers to the Principle 12 checklist at the start of every build task, before any code is written.
 2. Charlie must verify that checklist answers are present and complete before making the `run_claude_code` call.
 3. This makes the checklist visible and auditable — not just assumed.
 
 **Why this was incorrectly closed:**
-BUG-006 was closed on 2026-06-03 when Principle 11 was added to `principles.md`. That resolved the absence of a written checklist, but not the absence of an enforcement mechanism. The distinction matters: a checklist that Claude Code can read and ignore is not meaningfully different from no checklist. Closing the bug conflated documentation with enforcement.
+BUG-006 was closed on 2026-06-03 when Principle 12 was added to `principles.md`. That resolved the absence of a written checklist, but not the absence of an enforcement mechanism. The distinction matters: a checklist that Claude Code can read and ignore is not meaningfully different from no checklist. Closing the bug conflated documentation with enforcement.
 
 **Touches:**
-`principles.md` (Principle 11 — Pre-Build Checklist), `core/tools/claude_code.py` (pre-call verification), Charlie system prompt or tool logic (checklist gate)
+`principles.md` (Principle 12 — Pre-Build Checklist), `core/tools/claude_code.py` (pre-call verification), Charlie system prompt or tool logic (checklist gate)
 
 ---
 
