@@ -289,3 +289,23 @@ When the knockout stage begins, extend check_sa_results() (or add a new job) to 
 TBD
 
 ---
+
+## BUG-013 — World Cup topic not recreated if accidentally deleted
+**Type:** Bug
+**Status:** Open
+**Priority:** Medium
+**Severity:** Medium — notifications silently fail if the World Cup 2026 topic is deleted
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-06-13
+
+**Problem:**
+The World Cup tracker stores the topic ID in wc_notified.json and reuses it for all notifications. If the topic is deleted, the code tries to send to a dead thread ID and fails silently. There is no recovery or recreation logic, unlike the bug topic reconciliation job.
+
+**What needs fixing:**
+In _get_or_create_wc_topic(), wrap the proactive_send call in a try/except — if the send fails with a "thread not found" type error, clear the stored wc_topic_id, recreate the topic, and retry the send. This mirrors the resilience pattern used in the bug topic reconciliation job.
+
+**Touches:**
+TBD
+
+---
