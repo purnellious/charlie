@@ -298,6 +298,7 @@ TBD
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-06-13
+**Topic ID:** 1162
 
 **Problem:**
 The World Cup tracker stores the topic ID in wc_notified.json and reuses it for all notifications. If the topic is deleted, the code tries to send to a dead thread ID and fails silently. There is no recovery or recreation logic, unlike the bug topic reconciliation job.
