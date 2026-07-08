@@ -11,12 +11,12 @@ The following are the only sanctioned persistent stores. Nothing new is added wi
 | Store | Purpose | Retention |
 |---|---|---|
 | `data/charlie.db` (SQLite) | Message history per Telegram topic | Capped (see BUG-001); raw history deleted after /distil |
+| `data/news.db` (SQLite) | RSS sources and fetched articles | Sources: indefinite. Articles: pruned after 7 days. |
 | `charlie.md` | Jonathan's persistent context | Indefinite; updated via propose_charlie_update approval flow |
 | `context-archive.md` | Distilled topic archives | Indefinite; append-only |
 | `bugs.md` | Bug and debt tracker | Indefinite |
 | `devlog.md` | Change log | Indefinite |
 | `followups.md` | Open chase items | Indefinite |
-| `data/wc_notified.json` | World Cup tracker state — notified match IDs (30-min/60-min/result) and WC Telegram topic ID | Tournament-scoped; can be deleted after the 2026 World Cup ends |
 
 ---
 
@@ -38,7 +38,9 @@ The only authorised external data transmission is:
 - **Anthropic API** — conversation context sent for inference. This is unavoidable and approved.
   - Rule: No raw email content is ever sent to the API. Only processed summaries or extracted metadata.
   - Rule: No document contents sent verbatim unless Jonathan explicitly instructs it for a specific task.
+  - News module: article headlines and summaries (from public RSS feeds) are sent to Haiku for briefing summarisation. No personal data is included.
 - **Telegram API** — messages sent/received via the bot. Approved.
+- **RSS feeds (outbound fetch)** — `core/tools/news.py` fetches configured public RSS feeds via feedparser. No personal data is sent; these are read-only HTTP requests to public URLs. Sources are managed via the news_add_source / news_remove_source tools.
 
 No other third-party service receives Charlie data without Jonathan's explicit per-integration sign-off.
 
@@ -93,4 +95,4 @@ Claude Code must:
 
 ---
 
-*Last updated: 2026-06-10*
+*Last updated: 2026-07-08*

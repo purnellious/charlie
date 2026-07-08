@@ -9,7 +9,7 @@
 Open issues to be worked through over time. Newest bugs at the bottom.
 
 **Fields per entry:**
-- **Type:** Bug / Debt / Rule / Parked — Parked means a feature or capability explicitly decided not to build yet, with intention to revisit later
+- **Type:** Bug / Debt / Rule
 - **Status:** Open / In Progress / Closed
 - **Priority:** High / Medium / Low
 - **Severity:** High (breaks things or violates core principles) / Medium (creates friction or inefficiency) / Low (nice to have)
@@ -26,7 +26,6 @@ Open issues to be worked through over time. Newest bugs at the bottom.
 **Blocks anything current:** No — but will become a cost and privacy problem over time
 **Rough effort:** Medium
 **Logged:** 2026-05-29
-**Topic ID:** 890
 
 **Problem:**
 All messages (user and assistant) are stored in `data/charlie.db` with no expiry, cleanup, or deletion logic. The database grows forever. This means: (1) sensitive conversation data accumulates indefinitely on disk, (2) the full history is passed to the Claude API on every message in a topic, increasing cost and latency over time, and (3) it directly contradicts the design principle of keeping Charlie lightweight and data-minimal. This was not surfaced to Jonathan until after the Meta tool was built — it should have been caught at design stage.
@@ -47,7 +46,6 @@ Decide on and implement a retention policy. Options: auto-delete after N days, t
 **Blocks anything current:** No — but affects every future build
 **Rough effort:** Small
 **Logged:** 2026-05-29
-**Topic ID:** 892
 
 **Problem:**
 After a Claude Code build, Charlie announces completion without verifying the service is actually running the new code. In the /meta build, the bot process was running a pre-deployment version and hadn't been restarted — Charlie said "Built and live" and invited Jonathan to test it, and it failed immediately. Announcing completion prematurely is worse than saying nothing.
@@ -68,7 +66,6 @@ After any Claude Code build, the workflow should automatically: (1) confirm the 
 **Blocks anything current:** No — but should be consulted before any new tool is built
 **Rough effort:** Small
 **Logged:** 2026-05-29
-**Topic ID:** 894
 **Updated:** 2026-06-03
 
 **Problem:**
@@ -90,7 +87,6 @@ Jonathan has strong, clearly stated preferences about data minimalism and privac
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-05-29
-**Topic ID:** 896
 **Updated:** 2026-06-03
 
 **Problem:**
@@ -137,24 +133,23 @@ Several core principles have been clearly established through conversation: (1) 
 **Blocks anything current:** No — but should be resolved before the next tool is built
 **Rough effort:** Small
 **Logged:** 2026-05-29
-**Topic ID:** 898
 **Reopened:** 2026-06-03
 
 **Problem:**
-The pre-build checklist now exists as Principle 12 in `principles.md`. But documentation alone is not enforcement. CLAUDE.md instructs Claude Code to read `principles.md` before any action — but nothing prevents it from reading Principle 12 and silently ignoring it. The checklist is assumed to be consulted; it is never verified.
+The pre-build checklist now exists as Principle 11 in `principles.md`. But documentation alone is not enforcement. CLAUDE.md instructs Claude Code to read `principles.md` before any action — but nothing prevents it from reading Principle 11 and silently ignoring it. The checklist is assumed to be consulted; it is never verified.
 
 The original problem (builds violating core principles without detection) remains unsolved. Additionally, Claude Code tasks currently have broad file access by default with no scoping constraints. On 2026-05-29, a diagnostic task focused on debugging /meta silently rewrote bugs.md from scratch, wiping BUG-002 through BUG-005.
 
 **What needs fixing:**
-1. Claude Code must explicitly output its answers to the Principle 12 checklist at the start of every build task, before any code is written.
+1. Claude Code must explicitly output its answers to the Principle 11 checklist at the start of every build task, before any code is written.
 2. Charlie must verify that checklist answers are present and complete before making the `run_claude_code` call.
 3. This makes the checklist visible and auditable — not just assumed.
 
 **Why this was incorrectly closed:**
-BUG-006 was closed on 2026-06-03 when Principle 12 was added to `principles.md`. That resolved the absence of a written checklist, but not the absence of an enforcement mechanism. The distinction matters: a checklist that Claude Code can read and ignore is not meaningfully different from no checklist. Closing the bug conflated documentation with enforcement.
+BUG-006 was closed on 2026-06-03 when Principle 11 was added to `principles.md`. That resolved the absence of a written checklist, but not the absence of an enforcement mechanism. The distinction matters: a checklist that Claude Code can read and ignore is not meaningfully different from no checklist. Closing the bug conflated documentation with enforcement.
 
 **Touches:**
-`principles.md` (Principle 12 — Pre-Build Checklist), `core/tools/claude_code.py` (pre-call verification), Charlie system prompt or tool logic (checklist gate)
+`principles.md` (Principle 11 — Pre-Build Checklist), `core/tools/claude_code.py` (pre-call verification), Charlie system prompt or tool logic (checklist gate)
 
 ---
 
@@ -166,7 +161,6 @@ BUG-006 was closed on 2026-06-03 when Principle 12 was added to `principles.md`.
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-05-29
-**Topic ID:** 900
 
 **Problem:**
 During longer conversations, multiple tasks, open questions, and action items accumulate. There is no mechanism for Charlie to track what's been raised but not yet resolved within a session. This leads to items being dropped — for example, the /meta option 2 fix was agreed upon but not built until Jonathan re-raised it later in the conversation.
@@ -187,7 +181,6 @@ Charlie should maintain an internal running list of open items during a session 
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-05-30
-**Topic ID:** 902
 
 **Problem:**
 Architectural rules are currently sitting at the top of `bugs.md` (above the bug list itself). This is the wrong home for them — bugs.md is a tracking document, not an architecture reference. Rules mixed into a bug list are harder to find, easier to overlook, and create confusion about what the document is for.
@@ -214,7 +207,6 @@ New file: `architecture.md` (project root). `bugs.md` (remove the rule block onc
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-05-30
-**Topic ID:** 904
 
 **Problem:**
 When the scheduler creates a Telegram topic and sends an opening message, the main agent has no structured way to know the topic was scheduler-created or what task it relates to. If the DB write is missed or ordered incorrectly, the agent loses context entirely and must infer its purpose from message history order — which is fragile.
@@ -242,69 +234,6 @@ There is no way to quickly check whether all Charlie components are running corr
 
 **What needs fixing:**
 Build a /health or /status command in Telegram that checks all critical components and reports their status: (1) Telegram bot — responsive, (2) APScheduler — running and jobs registered, (3) SQLite DB — accessible and readable, (4) Agent — can instantiate and reach Anthropic API, (5) Key files present — charlie.md, principles.md, context-archive.md, followups.md. Output should be a clear pass/fail per component with any error detail surfaced. Consider also adding an automated silent check on a daily or hourly schedule that alerts Jonathan if anything is down.
-
-**Touches:**
-TBD
-
----
-
-## BUG-011 — No end-state verification checklist after builds
-**Type:** Rule
-**Status:** Open
-**Priority:** Medium
-**Severity:** Medium — builds get declared complete without confirming they actually work end-to-end from Jonathan's perspective
-**Blocks anything current:** No
-**Rough effort:** Small
-**Logged:** 2026-06-10
-**Topic ID:** 1086
-
-**Problem:**
-After a build completes, Charlie declares it "live" or "done" without running through a post-build checklist. Jonathan never gets confirmation that the tool works end-to-end, doesn't know how to monitor it, and doesn't know what failure looks like. The World Cup Tracker was declared live without Jonathan ever seeing a test Telegram notification arrive.
-
-**What needs fixing:**
-Add a mandatory post-build checklist to principles.md (Principle 9 or 11) that Charlie must run before closing any build: (1) has the happy path been verified end-to-end, (2) has Jonathan confirmed receipt of any user-facing output, (3) does Jonathan know how to check if it's running, (4) does Jonathan know what failure looks like, (5) has devlog.md been updated. Charlie should not say "we're live" until this checklist is complete.
-
-**Touches:**
-TBD
-
----
-
-## BUG-012 — World Cup: post-game messages for knockout stage not yet built
-**Type:** Parked
-**Status:** Open
-**Priority:** Low
-**Severity:** Low — missing nice-to-have feature, not a breakage
-**Blocks anything current:** No
-**Rough effort:** Small
-**Logged:** 2026-06-10
-**Topic ID:** 1094
-
-**Problem:**
-During the World Cup Tracker build, post-game result messages were scoped to South Africa games only. The idea of extending post-game messages to all knockout stage games was explicitly discussed and parked — agreed to revisit once the tournament reaches the knockout rounds.
-
-**What needs fixing:**
-When the knockout stage begins, extend check_sa_results() (or add a new job) to send post-game messages for all knockout matches, not just SA games. SA games already have this. The pattern is built — it just needs to be generalised and the trigger condition changed from SA-only to all matches in knockout stages.
-
-**Touches:**
-TBD
-
----
-
-## BUG-013 — World Cup topic not recreated if accidentally deleted
-**Type:** Bug
-**Status:** Open
-**Priority:** Medium
-**Severity:** Medium — notifications silently fail if the World Cup 2026 topic is deleted
-**Blocks anything current:** No
-**Rough effort:** Small
-**Logged:** 2026-06-13
-**Topic ID:** 1162
-
-**Problem:**
-The World Cup tracker stores the topic ID in wc_notified.json and reuses it for all notifications. If the topic is deleted, the code tries to send to a dead thread ID and fails silently. There is no recovery or recreation logic, unlike the bug topic reconciliation job.
-
-**What needs fixing:**
-In _get_or_create_wc_topic(), wrap the proactive_send call in a try/except — if the send fails with a "thread not found" type error, clear the stored wc_topic_id, recreate the topic, and retry the send. This mirrors the resilience pattern used in the bug topic reconciliation job.
 
 **Touches:**
 TBD

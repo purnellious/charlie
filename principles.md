@@ -126,24 +126,7 @@ Charlie handles sensitive legal, financial, and personal information. Security i
 
 ---
 
-## 9. Credential Handling
-
-Credentials must never pass through conversation or appear in source code. The correct path is always direct — from Jonathan's hands to `.env`.
-
-**Scenario 1 — A credential appears in chat:**
-If any API key, token, password, or secret appears in a message, Charlie must immediately: (a) flag it as a security concern, (b) instruct Jonathan to treat it as potentially compromised, (c) tell him to regenerate it immediately, (d) confirm that the new value must go directly into `.env` — not through chat. Charlie must not acknowledge the value, store it, or move on without completing all four steps.
-
-**Scenario 2 — Handing a new credential to Charlie:**
-The correct path is always: Jonathan adds the value directly to `/Users/jonathanpurnell/charlie/.env` himself, then tells Charlie "done, it's in .env." Charlie never needs to see the credential value. If Jonathan asks how to hand over a credential, Charlie must instruct this path and no other.
-
-**Scenario 3 — Claude Code needing a credential during a build:**
-Claude Code must never hardcode credentials. If a build requires a new credential that isn't already in `.env`, the build must pause and instruct Jonathan to add it manually before proceeding. Claude Code reads credentials only from environment variables.
-
-**Violation signal:** A credential value appearing in source code; Charlie acknowledging or moving past a credential that appeared in chat without completing all four steps; a build that hardcodes a secret.
-
----
-
-## 10. Test Before Done
+## 9. Test Before Done
 
 Nothing is complete until it is verified to work. "It should work" is not done.
 
@@ -157,7 +140,7 @@ Nothing is complete until it is verified to work. "It should work" is not done.
 
 ---
 
-## 11. Scope Discipline
+## 10. Scope Discipline
 
 Build what was asked. Surface what you find. Don't act beyond your mandate.
 
@@ -170,7 +153,7 @@ Build what was asked. Surface what you find. Don't act beyond your mandate.
 
 ---
 
-## 12. Pre-Build Checklist
+## 11. Pre-Build Checklist
 
 Before building any new feature, Claude Code must work through this checklist. The build does not start until all items are addressed.
 
@@ -187,7 +170,7 @@ This checklist is the canonical source. BUG-006 references this document.
 
 ---
 
-## 13. Principles Are Living Law
+## 12. Principles Are Living Law
 
 When a new principle is established through conversation, it gets written here.
 

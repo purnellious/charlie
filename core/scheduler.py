@@ -3,7 +3,6 @@ Scheduler — manages timed jobs.
 v1: morning briefing only (creates a new Telegram topic each day).
 v2: added daily check-in reminder at configurable time (default 08:00).
 v3: morning briefing includes open follow-up items from followups.md.
-v4: added World Cup 2026 match notification jobs (every 5 minutes).
 """
 
 import logging
@@ -113,6 +112,29 @@ async def _create_checkin(app: Application):
         log.error(f"Check-in creation failed: {e}")
 
 
+async def _send_news_briefing(app: Application):
+    group_id = os.getenv("TELEGRAM_GROUP_ID", "").strip()
+    if not group_id:
+        return
+
+    topic_name = f"News — {datetime.now().strftime('%d %b')}"
+
+    try:
+        from core.tools.news import generate_briefing
+        briefing = generate_briefing()
+
+        forum_topic = await app.bot.create_forum_topic(
+            chat_id=group_id,
+            name=topic_name,
+        )
+        thread_id = forum_topic.message_thread_id
+        await proactive_send(app, group_id, thread_id, briefing)
+        log.info(f"News briefing topic created: '{topic_name}' (thread_id={thread_id})")
+
+    except Exception as e:
+        log.error(f"News briefing failed: {e}")
+
+
 async def _reconcile_bug_topics(app: Application):
     group_id = os.getenv("TELEGRAM_GROUP_ID", "").strip()
     if not group_id:
@@ -140,6 +162,9 @@ async def setup_scheduler(app: Application):
     checkin_time = os.getenv("CHECKIN_TIME", "08:00")
     checkin_hour, checkin_minute = map(int, checkin_time.split(":"))
 
+    news_time = os.getenv("NEWS_BRIEFING_TIME", "12:00")
+    news_hour, news_minute = map(int, news_time.split(":"))
+
     timezone = os.getenv("TIMEZONE", "UTC")
 
     scheduler = AsyncIOScheduler(timezone=timezone)
@@ -158,34 +183,25 @@ async def setup_scheduler(app: Application):
         args=[app],
     )
     scheduler.add_job(
+        _send_news_briefing,
+        trigger="cron",
+        hour=news_hour,
+        minute=news_minute,
+        args=[app],
+    )
+    scheduler.add_job(
         _reconcile_bug_topics,
         trigger="cron",
         hour=3,
         minute=0,
         args=[app],
     )
-
-    # World Cup 2026 — match preview and result notifications
-    from core.world_cup_scheduler import check_upcoming_matches, check_sa_results
-    scheduler.add_job(
-        check_upcoming_matches,
-        trigger="interval",
-        minutes=5,
-        args=[app],
-    )
-    scheduler.add_job(
-        check_sa_results,
-        trigger="interval",
-        minutes=5,
-        args=[app],
-    )
-
     scheduler.start()
 
     log.info(f"Morning briefing scheduled for {briefing_time} ({timezone}) daily.")
     log.info(f"Check-in scheduled for {checkin_time} ({timezone}) daily.")
+    log.info(f"News briefing scheduled for {news_time} ({timezone}) daily.")
     log.info(f"Bug topic reconciliation scheduled for 03:00 ({timezone}) daily.")
-    log.info("World Cup match notifications scheduled (every 5 minutes).")
     app.bot_data["scheduler"] = scheduler
 
 

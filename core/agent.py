@@ -54,7 +54,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Short bug title (one line)."},
-                "type": {"type": "string", "enum": ["Bug", "Debt", "Rule", "Parked"], "description": "Bug, Debt, Rule, or Parked."},
+                "type": {"type": "string", "enum": ["Bug", "Debt", "Rule"], "description": "Bug, Debt, or Rule."},
                 "priority": {"type": "string", "enum": ["High", "Medium", "Low"]},
                 "severity": {"type": "string", "description": "One-line severity description including High/Medium/Low."},
                 "effort": {"type": "string", "enum": ["Small", "Medium", "Large"]},
@@ -80,6 +80,48 @@ TOOLS = [
             },
             "required": ["bug_id", "resolution_summary"]
         }
+    },
+    {
+        "name": "get_news_briefing",
+        "description": (
+            "Fetch today's news and return a formatted briefing, grouped by topic. "
+            "Call this when Jonathan asks for news, the latest headlines, or a news briefing. "
+            "The briefing is generated fresh each time — articles are fetched, summarised, and "
+            "returned as clean text for you to relay."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "news_add_source",
+        "description": (
+            "Add a new RSS feed to the news sources. Use when Jonathan wants to add a new "
+            "publication or topic. Confirm the name, URL, and topic before calling."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name":  {"type": "string", "description": "Display name, e.g. 'BBC World'"},
+                "url":   {"type": "string", "description": "RSS feed URL"},
+                "topic": {"type": "string", "description": "Topic group, e.g. 'World News', 'South Africa'"},
+            },
+            "required": ["name", "url", "topic"],
+        },
+    },
+    {
+        "name": "news_remove_source",
+        "description": "Remove a news source by its ID. Use list_sources first to confirm the ID.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_id": {"type": "integer", "description": "Source ID from news_list_sources"},
+            },
+            "required": ["source_id"],
+        },
+    },
+    {
+        "name": "news_list_sources",
+        "description": "List all configured RSS news sources with their IDs, topics, and URLs.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "propose_charlie_update",
@@ -179,6 +221,8 @@ with a one-line entry (date + what changed). This keeps Claude Code sessions in 
 when you learn something important about Jonathan. He will review before it's saved.
 - **log_bug** — log a bug in bugs.md and open a dedicated Telegram topic for it
 - **resolve_bug** — mark a bug as resolved after confirming a complete fix exists
+- **get_news_briefing** — fetch and summarise today's news, grouped by topic
+- **news_add_source** / **news_remove_source** / **news_list_sources** — manage RSS feeds
 
 **Capabilities boundary:** You run exclusively on Jonathan's always-on Mac (10.0.0.119). \
 You cannot directly access or execute anything on his main Mac. If Jonathan asks you to do \
@@ -344,6 +388,47 @@ async def handle_turn(
                         result = f"{bug_id} marked as resolved. You can now close the topic and run /distil."
                 except Exception as e:
                     result = f"resolve_bug failed: {e}"
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+
+            elif block.name == "get_news_briefing":
+                await send_fn("Fetching the news...")
+                from core.tools.news import tool_get_news_briefing
+                result = tool_get_news_briefing()
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+
+            elif block.name == "news_add_source":
+                from core.tools.news import tool_add_source
+                result = tool_add_source(
+                    name=block.input.get("name", ""),
+                    url=block.input.get("url", ""),
+                    topic=block.input.get("topic", ""),
+                )
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+
+            elif block.name == "news_remove_source":
+                from core.tools.news import tool_remove_source
+                result = tool_remove_source(source_id=block.input.get("source_id", 0))
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+
+            elif block.name == "news_list_sources":
+                from core.tools.news import tool_list_sources
+                result = tool_list_sources()
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
