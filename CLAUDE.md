@@ -61,8 +61,7 @@ Missing context files fail silently — load proceeds without them.
 **`core/history.py`** — SQLite-backed conversation history, keyed by topic_id.
 Thinking blocks are stripped before storage (they don't persist across sessions).
 
-**`core/scheduler.py`** — APScheduler. Currently one job: creates a morning briefing
-Telegram topic at the configured time each day.
+**`core/scheduler.py`** — APScheduler. Jobs: morning briefing topic, daily check-in topic, noon news briefing topic, 3am bug topic reconciliation.
 
 ## Bug management
 

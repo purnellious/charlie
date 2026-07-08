@@ -82,6 +82,40 @@ TOOLS = [
         }
     },
     {
+        "name": "convene_council",
+        "description": (
+            "Convene the Council — a structured multi-voice brainstorm on an idea. "
+            "Call this only after you have had a composition discussion with Jonathan and he has confirmed the member list. "
+            "The tool creates a new Telegram topic, runs two rounds (independent takes then debate), posts a synthesis, "
+            "and returns the synthesis for you to respond to. "
+            "Valid member keys: conservative, opportunist, long_term_thinker, pragmatist, "
+            "financial_skeptic, user_advocate, contrarian, minimalist."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "idea": {
+                    "type": "string",
+                    "description": "Full description of the idea being evaluated.",
+                },
+                "members": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Member keys to include, e.g. ['contrarian', 'pragmatist', 'financial_skeptic'].",
+                },
+                "topic_name": {
+                    "type": "string",
+                    "description": "Short Telegram topic name, e.g. 'Council — Freelance Platform'.",
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Any additional context about Jonathan's situation relevant to this idea.",
+                },
+            },
+            "required": ["idea", "members", "topic_name"],
+        },
+    },
+    {
         "name": "get_news_briefing",
         "description": (
             "Fetch today's news and return a formatted briefing, grouped by topic. "
@@ -223,6 +257,8 @@ when you learn something important about Jonathan. He will review before it's sa
 - **resolve_bug** — mark a bug as resolved after confirming a complete fix exists
 - **get_news_briefing** — fetch and summarise today's news, grouped by topic
 - **news_add_source** / **news_remove_source** / **news_list_sources** — manage RSS feeds
+- **convene_council** — run a structured multi-voice brainstorm; have a composition discussion first \
+to determine which members are relevant, confirm with Jonathan, then call this tool
 
 **Capabilities boundary:** You run exclusively on Jonathan's always-on Mac (10.0.0.119). \
 You cannot directly access or execute anything on his main Mac. If Jonathan asks you to do \
@@ -388,6 +424,21 @@ async def handle_turn(
                         result = f"{bug_id} marked as resolved. You can now close the topic and run /distil."
                 except Exception as e:
                     result = f"resolve_bug failed: {e}"
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+
+            elif block.name == "convene_council":
+                await send_fn("Convening the council — this will take a few minutes...")
+                from core.tools.council import convene_council
+                result = await convene_council(
+                    idea=block.input.get("idea", ""),
+                    members=block.input.get("members", []),
+                    topic_name=block.input.get("topic_name", "Council"),
+                    context=block.input.get("context", ""),
+                )
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,

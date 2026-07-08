@@ -39,6 +39,7 @@ The only authorised external data transmission is:
   - Rule: No raw email content is ever sent to the API. Only processed summaries or extracted metadata.
   - Rule: No document contents sent verbatim unless Jonathan explicitly instructs it for a specific task.
   - News module: article headlines and summaries (from public RSS feeds) are sent to Haiku for briefing summarisation. No personal data is included.
+  - Council tool: the idea text and any context Jonathan provides is sent in parallel to multiple Sonnet instances (one per council member, two rounds, plus synthesis). Jonathan must explicitly invoke the council, so this is approved per-use.
 - **Telegram API** — messages sent/received via the bot. Approved.
 - **RSS feeds (outbound fetch)** — `core/tools/news.py` fetches configured public RSS feeds via feedparser. No personal data is sent; these are read-only HTTP requests to public URLs. Sources are managed via the news_add_source / news_remove_source tools.
 
@@ -95,4 +96,4 @@ Claude Code must:
 
 ---
 
-*Last updated: 2026-07-08*
+*Last updated: 2026-07-08 (Council tool added)*
