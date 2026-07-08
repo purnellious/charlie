@@ -3,6 +3,8 @@
 A shared record of significant changes. Both Claude Code and Charlie read this.
 Newest entries at the top.
 
+2026-07-08: Updated news sources — fixed Daily Maverick URL (rss/ path), replaced dead News24 feed with IOL, replaced dead Reuters feed with Al Jazeera World
+
 2026-07-08: Added news module — core/tools/news.py (RSS fetch + Haiku summarisation + source management), 4 new agent tools (get_news_briefing, news_add_source, news_remove_source, news_list_sources), noon scheduled briefing topic (NEWS_BRIEFING_TIME env var), feedparser dependency added
 
 2026-06-05: bugs.py now commits and pushes bugs.md to git after every write — topic_ids no longer wiped by rsync
