@@ -3,10 +3,10 @@
 A shared record of significant changes. Both Claude Code and Charlie read this.
 Newest entries at the top.
 
+2026-07-08: Added retry logic to news briefing — on transient failure, schedules a one-off date job 5 minutes later (is_retry=True); second failure logs and gives up; cron schedule untouched
 2026-07-08: Noon news briefing failed at 12:00 EDT — transient SQLite "unable to open database file" error on Daily Maverick article storage, coinciding with simultaneous DNS failures on 4 other sources (IOL, Al Jazeera, BBC, Guardian); 4 sources (MIT Tech Review, The Verge, CoinDesk, CoinTelegraph) fetched successfully before the failure; briefing manually sent to Telegram (thread_id=1622); news.db is healthy
-
 2026-07-08: Updated news sources — fixed Daily Maverick URL (rss/ path), replaced dead News24 feed with IOL, replaced dead Reuters feed with Al Jazeera World
-
+2026-07-08: Added Council tool — core/tools/council.py; 8-member pool (conservative, opportunist, long_term_thinker, pragmatist, financial_skeptic, user_advocate, contrarian, minimalist); two-round hybrid (parallel independent takes → parallel debate) + synthesis; all on Sonnet with extended thinking; Charlie handles composition conversationally before calling convene_council
 2026-07-08: Added news module — core/tools/news.py (RSS fetch + Haiku summarisation + source management), 4 new agent tools (get_news_briefing, news_add_source, news_remove_source, news_list_sources), noon scheduled briefing topic (NEWS_BRIEFING_TIME env var), feedparser dependency added
 
 2026-06-05: bugs.py now commits and pushes bugs.md to git after every write — topic_ids no longer wiped by rsync

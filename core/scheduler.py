@@ -7,7 +7,7 @@ v3: morning briefing includes open follow-up items from followups.md.
 
 import logging
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.ext import Application
@@ -112,7 +112,7 @@ async def _create_checkin(app: Application):
         log.error(f"Check-in creation failed: {e}")
 
 
-async def _send_news_briefing(app: Application):
+async def _send_news_briefing(app: Application, is_retry: bool = False):
     group_id = os.getenv("TELEGRAM_GROUP_ID", "").strip()
     if not group_id:
         return
@@ -132,7 +132,22 @@ async def _send_news_briefing(app: Application):
         log.info(f"News briefing topic created: '{topic_name}' (thread_id={thread_id})")
 
     except Exception as e:
-        log.error(f"News briefing failed: {e}")
+        attempt = "retry" if is_retry else "attempt"
+        log.error(f"News briefing {attempt} failed: {e}")
+        if not is_retry:
+            scheduler = app.bot_data.get("scheduler")
+            if scheduler:
+                run_at = datetime.now() + timedelta(minutes=5)
+                scheduler.add_job(
+                    _send_news_briefing,
+                    trigger="date",
+                    run_date=run_at,
+                    args=[app],
+                    kwargs={"is_retry": True},
+                )
+                log.info(f"News briefing retry scheduled for {run_at.strftime('%H:%M:%S')}")
+            else:
+                log.error("News briefing: scheduler unavailable, cannot schedule retry.")
 
 
 async def _reconcile_bug_topics(app: Application):
