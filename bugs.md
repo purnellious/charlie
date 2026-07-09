@@ -90,6 +90,7 @@ Jonathan has strong, clearly stated preferences about data minimalism and privac
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-05-29
+**Topic ID:** 1702
 **Updated:** 2026-06-03
 
 **Problem:**
