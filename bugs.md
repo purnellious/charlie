@@ -26,6 +26,7 @@ Open issues to be worked through over time. Newest bugs at the bottom.
 **Blocks anything current:** No — but will become a cost and privacy problem over time
 **Rough effort:** Medium
 **Logged:** 2026-05-29
+**Topic ID:** 1693
 
 **Problem:**
 All messages (user and assistant) are stored in `data/charlie.db` with no expiry, cleanup, or deletion logic. The database grows forever. This means: (1) sensitive conversation data accumulates indefinitely on disk, (2) the full history is passed to the Claude API on every message in a topic, increasing cost and latency over time, and (3) it directly contradicts the design principle of keeping Charlie lightweight and data-minimal. This was not surfaced to Jonathan until after the Meta tool was built — it should have been caught at design stage.
