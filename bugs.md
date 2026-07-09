@@ -137,6 +137,7 @@ Several core principles have been clearly established through conversation: (1) 
 **Blocks anything current:** No — but should be resolved before the next tool is built
 **Rough effort:** Small
 **Logged:** 2026-05-29
+**Topic ID:** 1705
 **Reopened:** 2026-06-03
 
 **Problem:**
