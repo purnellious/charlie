@@ -68,6 +68,7 @@ After any Claude Code build, the workflow should automatically: (1) confirm the 
 **Blocks anything current:** No — but should be consulted before any new tool is built
 **Rough effort:** Small
 **Logged:** 2026-05-29
+**Topic ID:** 1698
 **Updated:** 2026-06-03
 
 **Problem:**
