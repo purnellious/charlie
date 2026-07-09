@@ -166,6 +166,7 @@ BUG-006 was closed on 2026-06-03 when Principle 11 was added to `principles.md`.
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-05-29
+**Topic ID:** 1708
 
 **Problem:**
 During longer conversations, multiple tasks, open questions, and action items accumulate. There is no mechanism for Charlie to track what's been raised but not yet resolved within a session. This leads to items being dropped — for example, the /meta option 2 fix was agreed upon but not built until Jonathan re-raised it later in the conversation.
