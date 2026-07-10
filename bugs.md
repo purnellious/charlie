@@ -214,6 +214,7 @@ New file: `architecture.md` (project root). `bugs.md` (remove the rule block onc
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-05-30
+**Topic ID:** 1759
 
 **Problem:**
 When the scheduler creates a Telegram topic and sends an opening message, the main agent has no structured way to know the topic was scheduler-created or what task it relates to. If the DB write is missed or ordered incorrectly, the agent loses context entirely and must infer its purpose from message history order — which is fragile.
