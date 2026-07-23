@@ -30,3 +30,12 @@ via /distil when closing a topic. Loaded into Charlie's system prompt alongside 
 - NY Bar: UCT transcripts submitted and under assessment; 6-month window flagged as tight against a February 2027 exam target.
 
 ---
+
+**Follow-ups / to-do list status — 22 Jul 2026**
+
+- Jonathan calls the follow-ups tracker his "to-do list" — terminology noted in charlie.md
+- NY Bar: UCT docs already submitted and with the Bar; just waiting — no action needed
+- Chainlink: post-interview, awaiting outcome
+- Handover plan: added to follow-ups, not yet drafted — still to be worked on
+
+---

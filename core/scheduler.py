@@ -150,6 +150,30 @@ async def _send_news_briefing(app: Application, is_retry: bool = False):
                 log.error("News briefing: scheduler unavailable, cannot schedule retry.")
 
 
+async def _run_grants_pipeline(app: Application):
+    """
+    Run the weekly artist grant finder pipeline and send the email.
+    Runs synchronous I/O (scraping, SMTP) in an executor to avoid blocking the event loop.
+    """
+    import asyncio
+    try:
+        from core.tools.grants import run_pipeline
+        from core.tools.grants_email import format_email, send_email
+
+        loop = asyncio.get_event_loop()
+
+        def _sync_run():
+            result = run_pipeline(dry_run=False)
+            formatted = format_email(result["opportunities"])
+            send_email(formatted)
+            return result["stats"]
+
+        stats = await loop.run_in_executor(None, _sync_run)
+        log.info(f"Grants pipeline complete: {stats}")
+    except Exception as e:
+        log.error(f"Grants pipeline failed: {e}")
+
+
 async def _reconcile_bug_topics(app: Application):
     group_id = os.getenv("TELEGRAM_GROUP_ID", "").strip()
     if not group_id:
@@ -211,12 +235,21 @@ async def setup_scheduler(app: Application):
         minute=0,
         args=[app],
     )
+    scheduler.add_job(
+        _run_grants_pipeline,
+        trigger="cron",
+        day_of_week="mon",
+        hour=8,
+        minute=0,
+        args=[app],
+    )
     scheduler.start()
 
     log.info(f"Morning briefing scheduled for {briefing_time} ({timezone}) daily.")
     log.info(f"Check-in scheduled for {checkin_time} ({timezone}) daily.")
     log.info(f"News briefing scheduled for {news_time} ({timezone}) daily.")
     log.info(f"Bug topic reconciliation scheduled for 03:00 ({timezone}) daily.")
+    log.info(f"Grant finder pipeline scheduled for Monday 08:00 ({timezone}) weekly.")
     app.bot_data["scheduler"] = scheduler
 
 

@@ -12,6 +12,7 @@ The following are the only sanctioned persistent stores. Nothing new is added wi
 |---|---|---|
 | `data/charlie.db` (SQLite) | Message history per Telegram topic | Capped (see BUG-001); raw history deleted after /distil |
 | `data/news.db` (SQLite) | RSS sources and fetched articles | Sources: indefinite. Articles: pruned after 7 days. |
+| `data/grants.db` (SQLite) | Verified grant/open-call opportunities + flagged entries | Indefinite; `opportunities` table: URL, title, deadline, source, category, description (≤500 chars), apply_link, first/last seen. `flagged` table: URL, title, flag reason, timestamp. No raw email or page content stored. |
 | `charlie.md` | Jonathan's persistent context | Indefinite; updated via propose_charlie_update approval flow |
 | `context-archive.md` | Distilled topic archives | Indefinite; append-only |
 | `bugs.md` | Bug and debt tracker | Indefinite |
@@ -39,6 +40,7 @@ The only authorised external data transmission is:
   - Rule: No raw email content is ever sent to the API. Only processed summaries or extracted metadata.
   - Rule: No document contents sent verbatim unless Jonathan explicitly instructs it for a specific task.
   - News module: article headlines and summaries (from public RSS feeds) are sent to Haiku for briefing summarisation. No personal data is included.
+  - Grants module: scraped grant listing text (from public web pages) is sent to Haiku for L3 verification and categorisation. Gmail email bodies are sent to Haiku for grant extraction — raw email content is processed in memory only and never written to disk or DB. Only extracted opportunity metadata (title, URL, deadline) is persisted.
   - Council tool: the idea text and any context Jonathan provides is sent in parallel to multiple Sonnet instances (one per council member, two rounds, plus synthesis). Jonathan must explicitly invoke the council, so this is approved per-use.
 - **Telegram API** — messages sent/received via the bot. Approved.
 - **RSS feeds (outbound fetch)** — `core/tools/news.py` fetches configured public RSS feeds via feedparser. No personal data is sent; these are read-only HTTP requests to public URLs. Sources are managed via the news_add_source / news_remove_source tools.
@@ -96,4 +98,4 @@ Claude Code must:
 
 ---
 
-*Last updated: 2026-07-08 (Council tool added)*
+*Last updated: 2026-07-23 (Grants module added — grants.db, Gmail polling, Haiku verification)*
