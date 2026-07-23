@@ -2,6 +2,7 @@
 
 A shared record of significant changes. Both Claude Code and Charlie read this.
 
+2026-07-23: Fixed load_dotenv in grants pipeline — added load_dotenv() to grants.py and grants_email.py so GRANT_GMAIL_ADDRESS/GRANT_GMAIL_PASSWORD/GRANT_RECIPIENT_EMAIL load correctly when run standalone (not via bot.py)
 2026-07-23: Fixed grants scrapers — NJSCA: corrected col-xl-9 column detection (NJ.gov has 4 such divs; was picking nav column, now picks content column); JCAC: rewrote to follow internal links only, skip pages with disqualifying titles, extract paragraphs + deadline patterns from each page
 Newest entries at the top.
 

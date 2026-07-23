@@ -10,6 +10,11 @@ import smtplib
 from datetime import date, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env")
 
 log = logging.getLogger(__name__)
 
