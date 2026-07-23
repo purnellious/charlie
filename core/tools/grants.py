@@ -177,92 +177,184 @@ def _extract_date_from_text(text: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def scrape_cafe() -> list:
-    """Scrape CaFÉ open calls listing for visual art opportunities."""
-    url = "https://www.callforentry.org/festivals_unique_info.php"
-    log.info(f"Scraping CaFÉ: {url}")
+    """
+    CaFÉ / callforentry.org open calls.
 
-    r = _safe_get(url)
-    if r is None or r.status_code != 200:
-        log.warning(f"CaFÉ scrape failed: status {getattr(r, 'status_code', 'N/A')}")
-        return []
+    Tries each endpoint in order and returns as soon as one yields results:
+      1. Main listing page  — Next.js app; parses __NEXT_DATA__ JSON if present,
+         then falls back to generic HTML element search.
+      2. festivals_unique_info.php — historically a JSON API; now returns a login
+         page, but we probe it anyway in case the endpoint is restored.
+      3. RSS feed (callforentry.org/rss.php) — currently 404, but tried as fallback.
 
-    try:
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(r.text, "html.parser")
-    except Exception as e:
-        log.error(f"CaFÉ parse error: {e}")
-        return []
+    If nothing yields usable data, logs a clear warning and returns [].
+    Does NOT raise — the pipeline continues without CaFÉ entries.
+    """
+    from bs4 import BeautifulSoup
 
-    opportunities = []
-    seen_urls: set = set()
+    attempts = [
+        "https://artist.callforentry.org/festivals.php?reset=1&apply=yes",
+        "https://artist.callforentry.org/festivals_unique_info.php",
+        "https://www.callforentry.org/rss.php",
+    ]
 
-    # CaFÉ listing entries link to individual call detail pages
-    for link in soup.find_all("a", href=True):
-        href = link.get("href", "")
-        title = link.get_text(strip=True)
-
-        if not title or len(title) < 8:
+    for url in attempts:
+        log.info(f"CaFÉ: fetching {url}")
+        r = _safe_get(url)
+        if r is None or r.status_code != 200:
+            log.info(f"CaFÉ: {url} → status {getattr(r, 'status_code', 'N/A')}, trying next")
             continue
 
-        # Resolve URL
-        if href.startswith("http"):
-            entry_url = href
-        elif href.startswith("/"):
-            entry_url = f"https://www.callforentry.org{href}"
-        else:
+        # ── RSS / Atom ─────────────────────────────────────────────────────
+        if any(sig in r.text[:300] for sig in ("<?xml", "<rss", "<feed")):
+            try:
+                import feedparser
+                feed = feedparser.parse(r.text)
+                results = []
+                for entry in feed.entries[:30]:
+                    title = entry.get("title", "").strip()
+                    link_url = entry.get("link", "")
+                    if not title or not link_url:
+                        continue
+                    summary = entry.get("summary", "") or entry.get("description", "")
+                    results.append(Opportunity(
+                        title=title,
+                        description=_html_to_text(summary)[:300],
+                        url=link_url,
+                        apply_url=link_url,
+                        deadline=_extract_date_from_text(summary),
+                        source="CaFÉ",
+                    ))
+                if results:
+                    log.info(f"CaFÉ: {len(results)} entries from RSS at {url}")
+                    return results[:30]
+            except Exception as e:
+                log.debug(f"CaFÉ: RSS/feedparser parse failed: {e}")
             continue
 
-        # Only follow links that look like individual call entries
-        if not re.search(r"(entry|festival|call|detail|id=|view)", href, re.IGNORECASE):
+        # ── JSON API response ───────────────────────────────────────────────
+        ct = r.headers.get("content-type", "")
+        first_char = r.text.strip()[:1]
+        if "json" in ct or first_char in ("{", "["):
+            try:
+                data = r.json()
+                raw_items = data if isinstance(data, list) else (
+                    data.get("festivals") or data.get("calls") or
+                    data.get("items") or data.get("results") or []
+                )
+                results = []
+                for item in raw_items[:30]:
+                    if not isinstance(item, dict):
+                        continue
+                    title = (item.get("title") or item.get("name") or "").strip()
+                    if not title:
+                        continue
+                    item_url = item.get("url") or item.get("link") or item.get("apply_url") or url
+                    if item_url and not item_url.startswith("http"):
+                        item_url = f"https://artist.callforentry.org{item_url}"
+                    results.append(Opportunity(
+                        title=title,
+                        description=str(item.get("description") or item.get("summary") or "")[:300],
+                        url=item_url,
+                        apply_url=item_url,
+                        deadline=item.get("deadline") or item.get("close_date") or None,
+                        source="CaFÉ",
+                    ))
+                if results:
+                    log.info(f"CaFÉ: {len(results)} entries from JSON API at {url}")
+                    return results[:30]
+                log.debug(f"CaFÉ: JSON response from {url} contained no usable items")
+            except Exception as e:
+                log.debug(f"CaFÉ: JSON parse failed for {url}: {e}")
             continue
 
-        if entry_url in seen_urls or entry_url == url:
+        # ── HTML — try Next.js __NEXT_DATA__ first ─────────────────────────
+        try:
+            soup = BeautifulSoup(r.text, "html.parser")
+        except Exception as e:
+            log.error(f"CaFÉ: BS4 parse error on {url}: {e}")
             continue
-        seen_urls.add(entry_url)
 
-        parent_text = link.parent.get_text(separator=" ") if link.parent else ""
-        deadline = _extract_date_from_text(parent_text)
+        next_script = soup.find("script", id="__NEXT_DATA__")
+        if next_script and next_script.string:
+            try:
+                data = json.loads(next_script.string)
+                props = data.get("props", {}).get("pageProps", {})
+                raw_items = (
+                    props.get("festivals") or props.get("calls") or
+                    props.get("items") or props.get("opportunities") or []
+                )
+                results = []
+                for item in raw_items[:30]:
+                    if not isinstance(item, dict):
+                        continue
+                    title = (item.get("title") or item.get("name") or "").strip()
+                    if not title:
+                        continue
+                    item_url = item.get("url") or item.get("link") or ""
+                    if item_url and not item_url.startswith("http"):
+                        item_url = f"https://artist.callforentry.org{item_url}"
+                    results.append(Opportunity(
+                        title=title,
+                        description=str(item.get("description") or "")[:300],
+                        url=item_url or url,
+                        apply_url=item_url or url,
+                        deadline=item.get("deadline") or item.get("close_date") or None,
+                        source="CaFÉ",
+                    ))
+                if results:
+                    log.info(f"CaFÉ: {len(results)} entries from __NEXT_DATA__ at {url}")
+                    return results[:30]
+                log.debug("CaFÉ: __NEXT_DATA__ present but pageProps contains no festival items")
+            except Exception as e:
+                log.debug(f"CaFÉ: __NEXT_DATA__ parse failed: {e}")
 
-        opportunities.append(Opportunity(
-            title=title,
-            description=parent_text[:300].strip(),
-            url=entry_url,
-            apply_url=entry_url,
-            deadline=deadline,
-            source="CaFÉ",
-        ))
-
-    # Fallback: pick up heading-anchored listings if nothing found yet
-    if not opportunities:
-        for tag in soup.find_all(["h2", "h3", "h4"]):
-            text = tag.get_text(strip=True)
-            if not text or len(text) < 10 or len(text) > 200:
+        # ── HTML — generic listing element search ──────────────────────────
+        entries = (
+            soup.find_all("article") or
+            soup.find_all("div", class_=re.compile(r"festival|call|opportunity|listing|card", re.I))
+        )
+        seen_hrefs: set = set()
+        results = []
+        for entry in entries[:30]:
+            a_tag = entry.find("a", href=True)
+            if not a_tag:
                 continue
-            nearby = tag.find("a") or (tag.parent and tag.parent.find("a"))
-            if not nearby or not nearby.get("href"):
+            title = a_tag.get_text(strip=True) or entry.get_text(strip=True)[:80]
+            if not title or len(title) < 8:
                 continue
-            href = nearby.get("href", "")
+            href = a_tag["href"]
             if href.startswith("http"):
                 entry_url = href
             elif href.startswith("/"):
-                entry_url = f"https://www.callforentry.org{href}"
+                entry_url = f"https://artist.callforentry.org{href}"
             else:
                 continue
-            if entry_url in seen_urls:
+            if entry_url in seen_hrefs:
                 continue
-            seen_urls.add(entry_url)
-            context = (tag.parent.get_text(separator=" ")[:300] if tag.parent else "")
-            opportunities.append(Opportunity(
-                title=text,
-                description=context,
+            seen_hrefs.add(entry_url)
+            context = entry.get_text(separator=" ")
+            results.append(Opportunity(
+                title=title,
+                description=context[:300],
                 url=entry_url,
                 apply_url=entry_url,
                 deadline=_extract_date_from_text(context),
                 source="CaFÉ",
             ))
+        if results:
+            log.info(f"CaFÉ: {len(results)} entries via HTML parsing of {url}")
+            return results[:30]
 
-    log.info(f"CaFÉ: found {len(opportunities)} raw opportunities")
-    return opportunities[:30]
+    log.warning(
+        "CaFÉ: all endpoints returned no usable data. "
+        "artist.callforentry.org is a JS-rendered Next.js application — "
+        "the listing page requires JavaScript execution to populate. "
+        "The festivals_unique_info.php API requires authentication. "
+        "The RSS feed at callforentry.org/rss.php returned 404. "
+        "Returning empty for this run — no CaFÉ entries will appear in the email."
+    )
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -270,100 +362,145 @@ def scrape_cafe() -> list:
 # ---------------------------------------------------------------------------
 
 def scrape_njsca() -> list:
-    """Scrape NJ State Council on the Arts grants page."""
-    url = "https://www.nj.gov/state/njsca/dos_njsca_grants.html"
-    log.info(f"Scraping NJSCA: {url}")
+    """
+    Scrape NJ State Council on the Arts.
 
-    r = _safe_get(url)
-    if r is None or r.status_code != 200:
-        log.warning(f"NJSCA scrape failed: status {getattr(r, 'status_code', 'N/A')}")
-        return []
+    grant-programs.shtml — primary source. NJ.gov uses Bootstrap cards:
+      .card.my-3 > .card-header > h3  →  grant programme name
+      .card.my-3 > .card-body > p     →  description and inline deadline dates
 
-    try:
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(r.text, "html.parser")
-    except Exception as e:
-        log.error(f"NJSCA parse error: {e}")
-        return []
+    announcements-opportunities.shtml — secondary source, but this page is
+    primarily a newsletter-signup wrapper; it holds very few concrete links.
+    We fetch it anyway and extract any grant-relevant hrefs we find.
+
+    Canonical URL for each card-based entry uses a #slug anchor so dedup
+    treats each programme as a distinct entry while L1 still resolves (the
+    HTTP GET hits the base page, ignoring the fragment).
+    """
+    from bs4 import BeautifulSoup
+
+    GRANT_KEYWORDS = ["grant", "fund", "award", "fellowship", "residency", "commission",
+                      "open call", "opportunity", "application", "artist"]
+    SKIP_HREF_PARTS = ("mailto:", "sign-up", "signup", "youtu", "twitter",
+                       "facebook", "constantcontact", "r20.", "visitor.")
 
     opportunities = []
     seen_urls: set = set()
 
-    # NJ.gov: main content area, look for headings + nearby links
-    content = (
-        soup.find("div", id=re.compile(r"content|main", re.I))
-        or soup.find("div", class_=re.compile(r"content|main", re.I))
-        or soup.find("main")
-        or soup
-    )
+    # ── Page 1: grant-programs.shtml ───────────────────────────────────────
+    grants_url = "https://www.nj.gov/state/njsca/grant-programs.shtml"
+    log.info(f"Scraping NJSCA grants page: {grants_url}")
+    r = _safe_get(grants_url)
+    if r is None or r.status_code != 200:
+        log.warning(f"NJSCA grants page: status {getattr(r, 'status_code', 'N/A')}")
+    else:
+        try:
+            soup = BeautifulSoup(r.text, "html.parser")
 
-    for heading in content.find_all(["h2", "h3", "h4", "strong"]):
-        title = heading.get_text(strip=True)
-        if not title or len(title) < 10 or len(title) > 250:
-            continue
-        if any(s in title.lower() for s in ["navigation", "menu", "search", "footer", "header"]):
-            continue
+            # NJ.gov has multiple col-xl-9 columns (header image, breadcrumb, title,
+            # main content). The main content column is always the last one with cards.
+            content = None
+            for div in reversed(soup.find_all("div", class_="col-xl-9")):
+                if div.find("div", class_="card"):
+                    content = div
+                    break
+            if not content:
+                content = soup.find("main") or soup
 
-        parent = heading.parent
-        context = parent.get_text(separator=" ")[:500] if parent else ""
+            for card in content.find_all("div", class_="card"):
+                header_div = card.find("div", class_="card-header")
+                if not header_div:
+                    continue
+                heading = header_div.find(["h2", "h3", "h4"]) or header_div.find(["strong", "b"])
+                if not heading:
+                    continue
+                title = heading.get_text(strip=True)
+                if not title or len(title) < 5:
+                    continue
 
-        link = heading.find("a") or (parent and parent.find("a", href=True))
-        if link and link.get("href"):
-            href = link["href"]
-            if href.startswith("http"):
-                entry_url = href
-            elif href.startswith("/"):
-                entry_url = f"https://www.nj.gov{href}"
-            else:
-                entry_url = url
-        else:
-            entry_url = url
+                body_div = card.find("div", class_="card-body")
+                if body_div:
+                    body_text = body_div.get_text(separator=" ", strip=True)
+                    description = body_text[:400]
+                    deadline = _extract_date_from_text(body_text)
+                    # Prefer the first non-social, non-newsletter link as apply_url
+                    apply_url = grants_url
+                    for a_tag in body_div.find_all("a", href=True):
+                        href = a_tag["href"]
+                        if any(skip in href for skip in SKIP_HREF_PARTS):
+                            continue
+                        if href.startswith("http"):
+                            apply_url = href
+                            break
+                        elif href.startswith("/"):
+                            apply_url = f"https://www.nj.gov{href}"
+                            break
+                else:
+                    body_text = ""
+                    description = ""
+                    deadline = None
+                    apply_url = grants_url
 
-        if entry_url in seen_urls:
-            continue
-        seen_urls.add(entry_url)
+                # Anchor-based URL keeps each programme distinct for dedup
+                slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+                entry_url = f"{grants_url}#{slug}"
+                if entry_url in seen_urls:
+                    continue
+                seen_urls.add(entry_url)
 
-        opportunities.append(Opportunity(
-            title=title,
-            description=context[:300].strip(),
-            url=entry_url,
-            apply_url=entry_url,
-            deadline=_extract_date_from_text(context),
-            source="NJSCA",
-        ))
+                opportunities.append(Opportunity(
+                    title=title,
+                    description=description,
+                    url=entry_url,
+                    apply_url=apply_url,
+                    deadline=deadline,
+                    source="NJSCA",
+                ))
 
-    # Also collect explicitly grant-labelled links
-    grant_keywords = ["grant", "fund", "award", "fellowship", "residency", "commission",
-                      "open call", "opportunity", "deadline", "application"]
-    for link in content.find_all("a", href=True):
-        text = link.get_text(strip=True)
-        href = link.get("href", "")
-        if not text or len(text) < 8:
-            continue
-        parent_text = link.parent.get_text(separator=" ") if link.parent else text
-        if not any(kw in (text + parent_text).lower() for kw in grant_keywords):
-            continue
+        except Exception as e:
+            log.error(f"NJSCA grants page parse error: {e}")
 
-        if href.startswith("http"):
-            entry_url = href
-        elif href.startswith("/"):
-            entry_url = f"https://www.nj.gov{href}"
-        else:
-            continue
-
-        if entry_url in seen_urls:
-            continue
-        seen_urls.add(entry_url)
-
-        context = parent_text[:300].strip()
-        opportunities.append(Opportunity(
-            title=text,
-            description=context,
-            url=entry_url,
-            apply_url=entry_url,
-            deadline=_extract_date_from_text(context),
-            source="NJSCA",
-        ))
+    # ── Page 2: announcements-opportunities.shtml ──────────────────────────
+    opp_url = "https://www.nj.gov/state/njsca/announcements-opportunities.shtml"
+    log.info(f"Scraping NJSCA opportunities page: {opp_url}")
+    r = _safe_get(opp_url)
+    if r is None or r.status_code != 200:
+        log.warning(f"NJSCA opportunities page: status {getattr(r, 'status_code', 'N/A')}")
+    else:
+        try:
+            soup = BeautifulSoup(r.text, "html.parser")
+            # Same multi-column layout as grants page — take the last col-xl-9
+            col9_divs = soup.find_all("div", class_="col-xl-9")
+            content = col9_divs[-1] if col9_divs else (soup.find("main") or soup)
+            for a_tag in content.find_all("a", href=True):
+                text = a_tag.get_text(strip=True)
+                href = a_tag["href"]
+                if not text or len(text) < 10:
+                    continue
+                if any(skip in href for skip in SKIP_HREF_PARTS):
+                    continue
+                parent_text = a_tag.parent.get_text(separator=" ") if a_tag.parent else text
+                if not any(kw in (text + parent_text).lower() for kw in GRANT_KEYWORDS):
+                    continue
+                if href.startswith("http"):
+                    entry_url = href
+                elif href.startswith("/"):
+                    entry_url = f"https://www.nj.gov{href}"
+                else:
+                    continue
+                if entry_url in seen_urls:
+                    continue
+                seen_urls.add(entry_url)
+                opportunities.append(Opportunity(
+                    title=text,
+                    description=parent_text[:300].strip(),
+                    url=entry_url,
+                    apply_url=entry_url,
+                    deadline=_extract_date_from_text(parent_text),
+                    source="NJSCA",
+                ))
+        except Exception as e:
+            log.error(f"NJSCA opportunities page parse error: {e}")
 
     log.info(f"NJSCA: found {len(opportunities)} raw opportunities")
     return opportunities[:20]
@@ -374,71 +511,131 @@ def scrape_njsca() -> list:
 # ---------------------------------------------------------------------------
 
 def scrape_jcac() -> list:
-    """Scrape Jersey City Arts Council for open calls and grants."""
-    base_url = "https://jerseycityartscouncil.org"
-    log.info(f"Scraping JCAC: {base_url}")
+    """
+    Scrape Jersey City Arts Council for open calls and grants.
 
-    pages_to_try = [
+    Strategy: scan four index pages for internal JCAC links, then follow each
+    link, check its title for skip words, extract description from paragraphs,
+    and look for deadline text.
+    """
+    from bs4 import BeautifulSoup
+
+    base_url = "https://jerseycityartscouncil.org"
+    SKIP_TITLES = ("recipient", "winner", "awarded", "archive", "folder", "newsletter")
+    DEADLINE_RE = re.compile(
+        r"(?:deadline[:\s]*|due[:\s]+|apply\s+by[:\s]+|applications?\s+due[:\s]+)",
+        re.IGNORECASE,
+    )
+
+    index_pages = [
         base_url,
+        f"{base_url}/grants-funding",
         f"{base_url}/opportunities",
-        f"{base_url}/grants",
         f"{base_url}/open-calls",
-        f"{base_url}/resources",
-        f"{base_url}/apply",
     ]
 
-    opportunities = []
-    seen_urls: set = set()
-    grant_keywords = ["grant", "fund", "award", "fellowship", "residency", "commission",
-                      "open call", "apply", "opportunity", "deadline", "call for"]
-    skip_words = ["home", "about", "contact", "facebook", "instagram", "twitter",
-                  "youtube", "linkedin", "donate", "newsletter", "subscribe"]
-
-    for page_url in pages_to_try:
+    # Stage 1 — collect internal candidate links from all index pages
+    candidate_urls: set = set()
+    for page_url in index_pages:
         r = _safe_get(page_url)
-        if r is None or r.status_code != 200:
+        if r is None:
+            log.info(f"JCAC: {page_url} → connection failed, skipping")
+            continue
+        if r.status_code == 404:
+            log.info(f"JCAC: {page_url} → 404, skipping")
+            continue
+        if r.status_code != 200:
+            log.warning(f"JCAC: {page_url} → HTTP {r.status_code}")
             continue
 
         try:
-            from bs4 import BeautifulSoup
             soup = BeautifulSoup(r.text, "html.parser")
         except Exception as e:
             log.error(f"JCAC parse error on {page_url}: {e}")
             continue
 
-        for link in soup.find_all("a", href=True):
-            text = link.get_text(strip=True)
-            href = link.get("href", "")
-
-            if not text or len(text) < 8:
+        for a_tag in soup.find_all("a", href=True):
+            href = a_tag["href"].strip()
+            if not href or href.startswith("#") or href.startswith("mailto:"):
                 continue
-            if any(s in text.lower() for s in skip_words):
-                continue
-
-            parent_text = link.parent.get_text(separator=" ") if link.parent else text
-            if not any(kw in (text + parent_text).lower() for kw in grant_keywords):
-                continue
-
             if href.startswith("http"):
-                entry_url = href
+                if not href.startswith(base_url):
+                    continue  # external domain — reject
+                link_url = href
             elif href.startswith("/"):
-                entry_url = f"{base_url}{href}"
+                link_url = f"{base_url}{href}"
             else:
                 continue
+            link_url = link_url.split("#")[0].rstrip("/")
+            if link_url and link_url != base_url.rstrip("/"):
+                candidate_urls.add(link_url)
 
-            if entry_url in seen_urls:
-                continue
-            seen_urls.add(entry_url)
+    log.info(f"JCAC: {len(candidate_urls)} candidate internal links to follow")
 
-            context = parent_text[:300].strip()
-            opportunities.append(Opportunity(
-                title=text,
-                description=context,
-                url=entry_url,
-                apply_url=entry_url,
-                deadline=_extract_date_from_text(context),
-                source="JCAC",
-            ))
+    # Stage 2 — follow each link, check title, extract content
+    opportunities = []
+    seen_urls: set = set()
+
+    for link_url in sorted(candidate_urls):
+        if link_url in seen_urls:
+            continue
+        seen_urls.add(link_url)
+
+        r = _safe_get(link_url)
+        if r is None or r.status_code != 200:
+            continue
+
+        try:
+            soup = BeautifulSoup(r.text, "html.parser")
+        except Exception as e:
+            log.error(f"JCAC parse error on {link_url}: {e}")
+            continue
+
+        # Skip pages whose title/h1 contains disqualifying words
+        title_tag = soup.find("title")
+        h1_tag = soup.find("h1")
+        page_title_lower = (title_tag.get_text(strip=True) if title_tag else "").lower()
+        h1_lower = (h1_tag.get_text(strip=True) if h1_tag else "").lower()
+        if any(skip in page_title_lower + " " + h1_lower for skip in SKIP_TITLES):
+            log.debug(f"JCAC: skipping {link_url} (skip word in title)")
+            continue
+
+        title = h1_tag.get_text(strip=True) if h1_tag else ""
+        if not title and title_tag:
+            title = title_tag.get_text(strip=True).split("|")[0].split("–")[0].strip()
+        if not title or len(title) < 5:
+            continue
+
+        # Extract description from first substantive paragraphs
+        main = (
+            soup.find("main")
+            or soup.find("div", class_=re.compile(r"\b(content|entry|post|page)\b", re.I))
+            or soup
+        )
+        paragraphs = [
+            p.get_text(separator=" ", strip=True)
+            for p in main.find_all("p")
+            if len(p.get_text(strip=True)) > 40
+        ]
+        description = " ".join(paragraphs[:3])[:500] if paragraphs else ""
+
+        # Look for deadline patterns; labelled text first, then any date
+        page_text = soup.get_text(separator=" ")
+        deadline = None
+        m = DEADLINE_RE.search(page_text)
+        if m:
+            deadline = _extract_date_from_text(page_text[m.start():m.start() + 80])
+        if not deadline:
+            deadline = _extract_date_from_text(page_text)
+
+        opportunities.append(Opportunity(
+            title=title,
+            description=description,
+            url=link_url,
+            apply_url=link_url,
+            deadline=deadline,
+            source="JCAC",
+        ))
 
     log.info(f"JCAC: found {len(opportunities)} raw opportunities")
     return opportunities[:20]

@@ -1,6 +1,8 @@
 # Charlie — Dev Log
 
 A shared record of significant changes. Both Claude Code and Charlie read this.
+
+2026-07-23: Fixed grants scrapers — NJSCA: corrected col-xl-9 column detection (NJ.gov has 4 such divs; was picking nav column, now picks content column); JCAC: rewrote to follow internal links only, skip pages with disqualifying titles, extract paragraphs + deadline patterns from each page
 Newest entries at the top.
 
 2026-07-23: Built grants email + scheduler layer (Part 2) — grants_email.py: format_grants_email(list[dict])->(subject,html), send_grants_email(subject,html)->bool; fixed scheduler _run_grants_pipeline (wrong import/return); Monday 08:00 job registered; SMTP send tested and confirmed
