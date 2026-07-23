@@ -157,19 +157,22 @@ async def _run_grants_pipeline(app: Application):
     """
     import asyncio
     try:
-        from core.tools.grants import run_pipeline
-        from core.tools.grants_email import format_email, send_email
+        from core.tools.grants import run_grants_pipeline
+        from core.tools.grants_email import format_grants_email, send_grants_email
 
         loop = asyncio.get_event_loop()
 
         def _sync_run():
-            result = run_pipeline(dry_run=False)
-            formatted = format_email(result["opportunities"])
-            send_email(formatted)
-            return result["stats"]
+            results = run_grants_pipeline(dry_run=False)
+            subject, html_body = format_grants_email(results)
+            success = send_grants_email(subject, html_body)
+            return len(results), success
 
-        stats = await loop.run_in_executor(None, _sync_run)
-        log.info(f"Grants pipeline complete: {stats}")
+        count, success = await loop.run_in_executor(None, _sync_run)
+        if success:
+            log.info(f"Grants pipeline complete: {count} opportunities emailed")
+        else:
+            log.error(f"Grants pipeline: {count} opportunities found but email send failed")
     except Exception as e:
         log.error(f"Grants pipeline failed: {e}")
 
