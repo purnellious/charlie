@@ -108,7 +108,7 @@ def _mark_seen(opp: "Opportunity"):
                 category    = excluded.category,
                 description = excluded.description
         """, (opp.url, opp.title, opp.deadline, opp.source, opp.category,
-              opp.description[:500] if opp.description else None,
+              _smart_truncate(opp.description) if opp.description else None,
               opp.apply_url))
 
 
@@ -133,6 +133,7 @@ def _safe_get(url: str) -> Optional[requests.Response]:
             headers={"User-Agent": _USER_AGENT},
             allow_redirects=True,
         )
+        r.encoding = r.apparent_encoding
         return r
     except Exception as e:
         log.warning(f"GET {url} failed: {e}")
@@ -143,6 +144,24 @@ def _html_to_text(html: str) -> str:
     text = re.sub(r"<[^>]+>", " ", html)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+def _smart_truncate(text: str, max_chars: int = 800) -> str:
+    """First 3 sentences; fall back to last full stop before max_chars."""
+    if not text:
+        return ""
+    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    if len(sentences) >= 1:
+        result = " ".join(sentences[:3])
+        if len(result) <= max_chars:
+            return result
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    last_stop = truncated.rfind(".")
+    if last_stop > 0:
+        return truncated[:last_stop + 1]
+    return truncated
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +241,7 @@ def scrape_cafe() -> list:
                     summary = entry.get("summary", "") or entry.get("description", "")
                     results.append(Opportunity(
                         title=title,
-                        description=_html_to_text(summary)[:300],
+                        description=_smart_truncate(_html_to_text(summary)),
                         url=link_url,
                         apply_url=link_url,
                         deadline=_extract_date_from_text(summary),
@@ -257,7 +276,7 @@ def scrape_cafe() -> list:
                         item_url = f"https://artist.callforentry.org{item_url}"
                     results.append(Opportunity(
                         title=title,
-                        description=str(item.get("description") or item.get("summary") or "")[:300],
+                        description=_smart_truncate(str(item.get("description") or item.get("summary") or "")),
                         url=item_url,
                         apply_url=item_url,
                         deadline=item.get("deadline") or item.get("close_date") or None,
@@ -299,7 +318,7 @@ def scrape_cafe() -> list:
                         item_url = f"https://artist.callforentry.org{item_url}"
                     results.append(Opportunity(
                         title=title,
-                        description=str(item.get("description") or "")[:300],
+                        description=_smart_truncate(str(item.get("description") or "")),
                         url=item_url or url,
                         apply_url=item_url or url,
                         deadline=item.get("deadline") or item.get("close_date") or None,
@@ -339,7 +358,7 @@ def scrape_cafe() -> list:
             context = entry.get_text(separator=" ")
             results.append(Opportunity(
                 title=title,
-                description=context[:300],
+                description=_smart_truncate(context),
                 url=entry_url,
                 apply_url=entry_url,
                 deadline=_extract_date_from_text(context),
@@ -424,7 +443,7 @@ def scrape_njsca() -> list:
                 body_div = card.find("div", class_="card-body")
                 if body_div:
                     body_text = body_div.get_text(separator=" ", strip=True)
-                    description = body_text[:400]
+                    description = _smart_truncate(body_text)
                     deadline = _extract_date_from_text(body_text)
                     # Prefer the first non-social, non-newsletter link as apply_url
                     apply_url = grants_url
@@ -496,7 +515,7 @@ def scrape_njsca() -> list:
                 seen_urls.add(entry_url)
                 opportunities.append(Opportunity(
                     title=text,
-                    description=parent_text[:300].strip(),
+                    description=_smart_truncate(parent_text),
                     url=entry_url,
                     apply_url=entry_url,
                     deadline=_extract_date_from_text(parent_text),
@@ -524,15 +543,20 @@ def scrape_jcac() -> list:
     from bs4 import BeautifulSoup
 
     base_url = "https://jerseycityartscouncil.org"
-    SKIP_TITLES = ("recipient", "winner", "awarded", "archive", "folder", "newsletter")
+    SKIP_TITLES = (
+        "recipient", "winner", "awarded", "archive", "folder", "newsletter",
+        "poet laureate", "arts awards", "award", "laureate", "history", "about",
+        "2019", "2020", "2021", "2022", "2023", "2024",
+    )
+    NAV_SKIP_PATHS = {"about", "contact", "home", "news", "events", "blog", "staff", "board"}
     DEADLINE_RE = re.compile(
         r"(?:deadline[:\s]*|due[:\s]+|apply\s+by[:\s]+|applications?\s+due[:\s]+)",
         re.IGNORECASE,
     )
 
     index_pages = [
-        base_url,
         f"{base_url}/grants-funding",
+        f"{base_url}/grants",
         f"{base_url}/opportunities",
         f"{base_url}/open-calls",
     ]
@@ -570,6 +594,11 @@ def scrape_jcac() -> list:
             else:
                 continue
             link_url = link_url.split("#")[0].rstrip("/")
+            # Skip top-level navigation pages
+            path = link_url[len(base_url):].lstrip("/")
+            first_segment = path.split("/")[0].lower()
+            if first_segment in NAV_SKIP_PATHS:
+                continue
             if link_url and link_url != base_url.rstrip("/"):
                 candidate_urls.add(link_url)
 
@@ -620,7 +649,7 @@ def scrape_jcac() -> list:
             for p in main.find_all("p")
             if len(p.get_text(strip=True)) > 40
         ]
-        description = " ".join(paragraphs[:3])[:500] if paragraphs else ""
+        description = _smart_truncate(" ".join(paragraphs[:3])) if paragraphs else ""
 
         # Look for deadline patterns; labelled text first, then any date
         page_text = soup.get_text(separator=" ")
@@ -899,37 +928,51 @@ def validate_L3(opportunities: list) -> tuple:
             page_text = _html_to_text(r.text)[:4000]
 
             prompt = (
-                "You are verifying an artist grant/open call listing against its live source page.\n\n"
+                "You are a quality filter for an artist grant finder tool. "
+                "Review this page content and the scraped opportunity data.\n\n"
                 f"Scraped data:\n"
                 f"Title: {opp.title}\n"
-                f"Description: {opp.description[:400]}\n"
+                f"Description: {opp.description}\n"
                 f"Deadline: {opp.deadline or 'not found'}\n"
                 f"Apply URL: {opp.apply_url}\n\n"
                 f"Source page content (truncated to 4000 chars):\n{page_text}\n\n"
-                "Does this source page confirm that:\n"
-                "1. The title matches or closely relates to content on the page?\n"
-                "2. The description is broadly accurate?\n"
-                "3. This is a real open call, grant, residency, or funding opportunity for visual artists?\n\n"
-                "Reply with exactly one word on the first line: VERIFIED or MISMATCH\n"
-                "Then one sentence explaining why."
+                "Reject this entry (match: false) if ANY of the following are true:\n"
+                "- The opportunity is closed, past its deadline, or no longer accepting applications\n"
+                "- This is an informational or about page with no active application process\n"
+                "- This is an archive, past winners, past recipients, or award history page\n"
+                "- This is a general programme overview with no currently open call\n"
+                "- There is no clear way for an artist to apply right now\n"
+                "- The page is navigation, a folder index, or a category listing\n"
+                "- The content is primarily about a past event or past cycle\n\n"
+                "Only approve (match: true) if ALL of the following are true:\n"
+                "- There is an active, open opportunity that artists can currently apply for OR "
+                "an upcoming opportunity with a future deadline clearly stated\n"
+                "- There is a clear application process or link to apply\n"
+                "- The opportunity is relevant to visual artists or artists generally\n\n"
+                'Return JSON: {"match": true/false, "issues": "reason for rejection or OK"}'
             )
 
             response = client.messages.create(
                 model=MODEL,
-                max_tokens=120,
+                max_tokens=200,
                 messages=[{"role": "user", "content": prompt}],
             )
 
             answer = next((b.text.strip() for b in response.content if hasattr(b, "text")), "")
-            lines = answer.split("\n", 1)
-            verdict = lines[0].strip().upper()
-            reason = lines[1].strip() if len(lines) > 1 else ""
+            try:
+                json_match = re.search(r'\{.*\}', answer, re.DOTALL)
+                result = json.loads(json_match.group()) if json_match else {}
+                match = result.get("match", False)
+                issues = result.get("issues", "AI could not verify")
+            except Exception:
+                match = False
+                issues = "JSON parse error"
 
-            if "VERIFIED" in verdict:
+            if match:
                 verified.append(opp)
             else:
                 opp.flagged = True
-                opp.flag_reason = f"L3: {reason or 'AI could not verify'}"
+                opp.flag_reason = f"L3: {issues}"
                 flagged.append(opp)
                 log.info(f"L3 flagged: {opp.title!r} — {opp.flag_reason}")
 
@@ -1089,7 +1132,21 @@ def run_grants_pipeline(dry_run: bool = False) -> list:
 
     # Stage 1: Scrape
     all_opps = scrape_all()
-    log.info(f"Stage 1 (Scrape): {len(all_opps)} total")
+    raw_count = len(all_opps)
+    log.info(f"Stage 1 (Scrape): {raw_count} total")
+
+    # Within-run deduplication by URL (keep first occurrence across all scrapers)
+    seen_urls_run: set = set()
+    deduped_run = []
+    for opp in all_opps:
+        if not opp.url or opp.url not in seen_urls_run:
+            deduped_run.append(opp)
+            if opp.url:
+                seen_urls_run.add(opp.url)
+        else:
+            log.debug(f"Within-run dedup: skipping duplicate {opp.url!r}")
+    all_opps = deduped_run
+    log.info(f"After within-run dedup: {len(all_opps)} unique (was {raw_count})")
 
     # Stage 2: L1 + L2 validation
     valid_L1, flagged_L1 = validate_L1(all_opps)
