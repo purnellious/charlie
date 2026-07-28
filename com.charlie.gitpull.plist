@@ -6,8 +6,8 @@
     <string>com.charlie.gitpull</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/git</string>
-        <string>pull</string>
+        <string>/bin/bash</string>
+        <string>/Users/purnellious/charlie/gitpull.sh</string>
     </array>
     <key>WorkingDirectory</key>
     <string>/Users/purnellious/charlie</string>
