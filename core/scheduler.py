@@ -192,6 +192,17 @@ async def _reconcile_bug_topics(app: Application):
         log.error(f"Bug topic reconciliation failed: {e}")
 
 
+async def _run_retention_sweep(app: Application):
+    group_id = os.getenv("TELEGRAM_GROUP_ID", "").strip()
+    if not group_id:
+        return
+    try:
+        from core.tools.retention import run_retention_sweep
+        await run_retention_sweep(app, group_id)
+    except Exception as e:
+        log.error(f"Retention sweep failed: {e}")
+
+
 async def setup_scheduler(app: Application):
     group_id = os.getenv("TELEGRAM_GROUP_ID", "").strip()
     if not group_id:
@@ -246,6 +257,13 @@ async def setup_scheduler(app: Application):
         minute=0,
         args=[app],
     )
+    scheduler.add_job(
+        _run_retention_sweep,
+        trigger="cron",
+        hour=4,
+        minute=0,
+        args=[app],
+    )
     scheduler.start()
 
     log.info(f"Morning briefing scheduled for {briefing_time} ({timezone}) daily.")
@@ -253,6 +271,7 @@ async def setup_scheduler(app: Application):
     log.info(f"News briefing scheduled for {news_time} ({timezone}) daily.")
     log.info(f"Bug topic reconciliation scheduled for 03:00 ({timezone}) daily.")
     log.info(f"Grant finder pipeline scheduled for Monday 08:00 ({timezone}) weekly.")
+    log.info(f"Retention sweep scheduled for 04:00 ({timezone}) daily.")
     app.bot_data["scheduler"] = scheduler
 
 

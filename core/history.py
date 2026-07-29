@@ -26,6 +26,12 @@ def init_db():
                 timestamp TEXT    DEFAULT (datetime('now'))
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS deletion_warnings (
+                topic_id  TEXT PRIMARY KEY,
+                warned_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
         conn.commit()
 
 
@@ -81,8 +87,60 @@ def save_message(topic_id: int, role: str, content):
 
 
 def delete_topic_history(topic_id: int):
-    """Delete all messages for a topic. Called after distillation is approved or discarded."""
+    """Delete all messages for a topic. Called after distillation is approved or discarded,
+    or by the retention sweep (BUG-001)."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("DELETE FROM messages WHERE topic_id = ?", (str(topic_id),))
+        conn.execute("DELETE FROM deletion_warnings WHERE topic_id = ?", (str(topic_id),))
         conn.commit()
     log.info(f"Deleted conversation history for topic {topic_id}")
+
+
+def get_stale_topics(inactive_days: int) -> list:
+    """Topics where Jonathan's own activity (last message with role='user', falling back
+    to the topic's very first message if he never replied) is older than inactive_days.
+    Charlie's own scheduled posts (e.g. an unanswered morning briefing) don't count as
+    activity — see BUG-001."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """
+            SELECT topic_id,
+                   COUNT(*) AS msg_count,
+                   COALESCE(MAX(CASE WHEN role = 'user' THEN timestamp END), MIN(timestamp)) AS last_activity
+            FROM messages
+            GROUP BY topic_id
+            HAVING last_activity < datetime('now', ?)
+            """,
+            (f"-{inactive_days} days",)
+        ).fetchall()
+    return [{"topic_id": r[0], "msg_count": r[1], "last_activity": r[2]} for r in rows]
+
+
+def get_warning(topic_id) -> str:
+    """Return the warned_at timestamp for a topic, or None if never warned."""
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT warned_at FROM deletion_warnings WHERE topic_id = ?", (str(topic_id),)
+        ).fetchone()
+    return row[0] if row else None
+
+
+def set_warning(topic_id):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO deletion_warnings (topic_id, warned_at) VALUES (?, datetime('now'))",
+            (str(topic_id),)
+        )
+        conn.commit()
+
+
+def clear_warning(topic_id):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("DELETE FROM deletion_warnings WHERE topic_id = ?", (str(topic_id),))
+        conn.commit()
+
+
+def get_all_warned_topic_ids() -> list:
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute("SELECT topic_id FROM deletion_warnings").fetchall()
+    return [r[0] for r in rows]
