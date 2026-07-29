@@ -131,7 +131,7 @@ Several core principles have been clearly established through conversation: (1) 
 
 ## BUG-006 — Pre-build checklist exists but is not enforced
 **Type:** Debt
-**Status:** Open
+**Status:** Closed
 **Priority:** High
 **Severity:** High — a checklist that is never auditably verified provides no protection; builds can still violate core principles without anyone noticing
 **Blocks anything current:** No — but should be resolved before the next tool is built
@@ -154,6 +154,10 @@ The original problem (builds violating core principles without detection) remain
 BUG-006 was closed on 2026-06-03 when Principle 11 was added to `principles.md`. That resolved the absence of a written checklist, but not the absence of an enforcement mechanism. The distinction matters: a checklist that Claude Code can read and ignore is not meaningfully different from no checklist. Closing the bug conflated documentation with enforcement.
 
 **Updated:** 2026-07-29 — Principle 11 now also includes a Build Tier classification and a required file/scope declaration (feeds the new Principle 9 scope-diff check), and Principle 9 gained a matching Post-Build Checklist (resolves BUG-011). This makes the checklists more complete, but does not resolve this bug: nothing yet forces Claude Code to output its checklist answers or blocks a build from starting/committing if it hasn't. The enforcement mechanism described below is still unbuilt.
+
+**Resolved:** 2026-07-29 — `run_claude_code`'s tool schema in `core/agent.py` now requires `tier`, `scope`, and `checklist` fields (plus `jonathan_confirmed_risk` for Tier 3); the API enforces these as required at the schema level, so Charlie cannot call the tool without populating them. A new `_validate_claude_code_call()` gate runs before dispatch and rejects incomplete or under-confirmed calls with no extra API cost. Separately, `core/tools/claude_code.py` now checks actual changed files (`git status --porcelain`) against the declared `scope` after each run, before `_auto_commit` — anything outside scope blocks the commit/push entirely and is surfaced instead, which is the direct fix for the failure mode that wiped bugs.md twice (this bug, and again on 2026-07-08 per BUG-011's restore note). Auto-push behaviour is otherwise unchanged for all tiers — a Tier-3 push-confirmation step was considered and deliberately dropped as redundant friction with no new decision-relevant information at that point.
+
+Verified locally: `_validate_claude_code_call` against 6 pass/fail cases, and `_out_of_scope`/`_changed_files` against this session's own real uncommitted changes (correctly passed a matching scope, correctly flagged a narrowed scope, correctly flagged an unrelated scope). **Not yet verified**: a live, Telegram-triggered build going through this gate end-to-end on the always-on Mac — that requires syncing and restarting `com.charlie` there first.
 
 **Touches:**
 `principles.md` (Principle 11 — Pre-Build Checklist), `core/tools/claude_code.py` (pre-call verification), Charlie system prompt or tool logic (checklist gate)

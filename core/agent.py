@@ -28,8 +28,9 @@ TOOLS = [
         "description": (
             "Run a Claude Code task to build new capabilities, write code, or make changes "
             "to Charlie. Use this when Jonathan asks you to build something, add a feature, "
-            "or make a system change. Describe the task clearly and completely — Claude Code "
-            "will execute it autonomously on the local machine."
+            "or make a system change. Claude Code will execute it autonomously on the local "
+            "machine. Before calling this, work through the Principle 11 Pre-Build Checklist "
+            "in principles.md — tier, scope, and checklist below are how you show that work."
         ),
         "input_schema": {
             "type": "object",
@@ -37,9 +38,48 @@ TOOLS = [
                 "task": {
                     "type": "string",
                     "description": "Full description of what to build or change."
+                },
+                "tier": {
+                    "type": "string",
+                    "enum": ["1", "2", "3"],
+                    "description": (
+                        "Build Tier per Principle 11. 1=Low: copy/prompt/log changes, no "
+                        "persistence or behaviour change. 2=Standard: new tool, new scheduled "
+                        "job, edits to agent.py/bot.py/scheduler.py, or anything touching "
+                        "bugs.md/principles.md/charlie.md. 3=High: touches .env or "
+                        "credentials, shares data with a third party, deletes data, touches "
+                        "financial/legal data, or changes deployment/launchd config. "
+                        "If unclear, use the higher tier."
+                    )
+                },
+                "scope": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Files or paths this build is expected to touch, e.g. "
+                        "['core/agent.py', 'bugs.md']. Checked against what Claude Code "
+                        "actually changes — anything outside this list blocks the "
+                        "auto-commit and is surfaced to Jonathan instead of being pushed."
+                    )
+                },
+                "checklist": {
+                    "type": "string",
+                    "description": (
+                        "Your answers to the remaining Principle 11 questions: what problem "
+                        "this solves, whether a simpler solution exists, what data (if any) "
+                        "is stored and why, the cost/complexity, and the testing plan."
+                    )
+                },
+                "jonathan_confirmed_risk": {
+                    "type": "boolean",
+                    "description": (
+                        "Tier 3 only. Set true only if Jonathan has explicitly confirmed, in "
+                        "this conversation, that he wants to proceed given the specific risk "
+                        "named to him. Leave false/omitted for Tier 1-2."
+                    )
                 }
             },
-            "required": ["task"]
+            "required": ["task", "tier", "scope", "checklist"]
         }
     },
     {
@@ -250,7 +290,9 @@ with a one-line entry (date + what changed). This keeps Claude Code sessions in 
 
 ## Your tools
 
-- **run_claude_code** — build new capabilities, write code, or make changes to Charlie itself
+- **run_claude_code** — build new capabilities, write code, or make changes to Charlie itself. \
+Requires a declared tier, scope, and Principle 11 checklist. Tier 3 builds also require \
+Jonathan's explicit confirmation of the named risk before you call it
 - **propose_charlie_update** — propose an update to your persistent context (charlie.md) \
 when you learn something important about Jonathan. He will review before it's saved.
 - **log_bug** — log a bug in bugs.md and open a dedicated Telegram topic for it
@@ -273,6 +315,33 @@ and claiming it's done.
 
 {charlie_doc}
 {f"## Archived context from past topics{chr(10)}{context_archive}" if context_archive else ""}"""
+
+
+def _validate_claude_code_call(tier: str, scope: list, checklist: str, risk_confirmed: bool) -> str | None:
+    """Return an error string if the run_claude_code call is missing required Principle 11
+    fields, or None if it's ready to dispatch."""
+    if tier not in ("1", "2", "3"):
+        return (
+            "Invalid or missing tier — must be '1', '2', or '3'. See Principle 11 (Build "
+            "Tiers) in principles.md. Retry with a valid tier."
+        )
+    if not scope:
+        return (
+            "Missing declared scope — list the files/areas this build is expected to touch, "
+            "per Principle 11. Retry with a non-empty scope."
+        )
+    if not checklist or not checklist.strip():
+        return (
+            "Missing checklist — answer the remaining Principle 11 Pre-Build Checklist "
+            "questions before calling run_claude_code. Retry with a completed checklist."
+        )
+    if tier == "3" and not risk_confirmed:
+        return (
+            "Tier 3 build requires Jonathan's explicit confirmation of the named risk before "
+            "proceeding. Ask him directly in this conversation, then retry with "
+            "jonathan_confirmed_risk=true only once he has actually confirmed."
+        )
+    return None
 
 
 _RETRY_DELAYS = [5, 15, 30]  # seconds between attempts
@@ -367,8 +436,23 @@ async def handle_turn(
         for block in tool_blocks:
             if block.name == "run_claude_code":
                 task = block.input.get("task", "")
-                await send_fn(f"Running Claude Code: {task[:100]}...")
-                result = await run_claude_code(task)
+                tier = block.input.get("tier", "")
+                scope = block.input.get("scope", [])
+                checklist = block.input.get("checklist", "")
+                risk_confirmed = block.input.get("jonathan_confirmed_risk", False)
+
+                validation_error = _validate_claude_code_call(tier, scope, checklist, risk_confirmed)
+                if validation_error:
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": validation_error,
+                        "is_error": True,
+                    })
+                    continue
+
+                await send_fn(f"Running Claude Code (Tier {tier}): {task[:100]}...")
+                result = await run_claude_code(task, tier=tier, scope=scope)
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,

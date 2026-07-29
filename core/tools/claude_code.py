@@ -5,6 +5,7 @@ Auto-commits any changes to git on completion.
 """
 
 import asyncio
+import fnmatch
 import logging
 import os
 import shlex
@@ -25,9 +26,13 @@ MAX_RETRIES = 3
 RETRY_DELAY = 65  # seconds — wait for the token bucket to refill
 
 
-async def run(task: str) -> str:
-    """Run a Claude Code task. Returns a result string for Charlie to relay."""
-    log.info(f"Claude Code task: {task[:80]}")
+async def run(task: str, tier: str, scope: list) -> str:
+    """Run a Claude Code task. Returns a result string for Charlie to relay.
+
+    tier and scope come from the run_claude_code tool call (Principle 11). scope is
+    checked against what actually changed before anything is committed — see BUG-006.
+    """
+    log.info(f"Claude Code task (Tier {tier}, scope={scope}): {task[:80]}")
 
     cmd = f"{CLAUDE_CMD} --dangerously-skip-permissions --model {CLAUDE_CODE_MODEL} -p {shlex.quote(task)}"
 
@@ -56,8 +61,23 @@ async def run(task: str) -> str:
                 log.error(f"Task failed (exit {proc.returncode}): {detail[:200]}")
                 return f"Task failed (exit {proc.returncode}).\n\n{_truncate(detail)}"
 
-            commit_note = await _auto_commit(task)
             result = _truncate(output) if output else "Task completed — no output."
+
+            changed = await _changed_files()
+            out_of_scope = _out_of_scope(changed, scope) if changed else []
+            if out_of_scope:
+                result += (
+                    "\n\nSCOPE MISMATCH — NOT committed, NOT pushed.\n"
+                    f"Declared scope: {', '.join(scope)}\n"
+                    f"Files actually touched: {', '.join(changed)}\n"
+                    f"Outside declared scope: {', '.join(out_of_scope)}\n\n"
+                    "Changes are sitting uncommitted in the working tree on the always-on "
+                    "Mac. Relay this to Jonathan before doing anything else — do not commit "
+                    "or push until he decides how to proceed."
+                )
+                return result
+
+            commit_note = await _auto_commit(task)
             if commit_note:
                 result += f"\n\n{commit_note}"
             return result
@@ -78,6 +98,36 @@ async def run(task: str) -> str:
         except Exception as e:
             log.error(f"Claude Code error: {e}")
             return f"Unexpected error: {e}"
+
+
+async def _changed_files() -> list:
+    """Return paths of all working-tree changes (staged, unstaged, untracked)."""
+    proc = await asyncio.create_subprocess_exec(
+        "git", "status", "--porcelain",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(CHARLIE_ROOT),
+    )
+    stdout, _ = await proc.communicate()
+    files = []
+    for line in stdout.decode("utf-8", errors="replace").splitlines():
+        path = line[3:].strip()
+        if " -> " in path:  # renames: "old -> new"
+            path = path.split(" -> ")[-1].strip()
+        files.append(path.strip('"'))
+    return files
+
+
+def _out_of_scope(files: list, scope: list) -> list:
+    """Files that don't match any declared scope entry (exact path, glob, or directory prefix)."""
+    out = []
+    for f in files:
+        if not any(
+            fnmatch.fnmatch(f, pattern) or f == pattern.rstrip("/") or f.startswith(pattern.rstrip("/") + "/")
+            for pattern in scope
+        ):
+            out.append(f)
+    return out
 
 
 async def _auto_commit(task: str) -> str:
