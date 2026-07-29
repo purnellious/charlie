@@ -19,10 +19,28 @@ CHARLIE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOG="$CHARLIE_ROOT/charlie.log"
 
 send_telegram() {
+    local text="$1"
     curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
         --data-urlencode "chat_id=${GROUP_ID}" \
         --data-urlencode "message_thread_id=${TOPIC_ID}" \
-        --data-urlencode "text=$1" > /dev/null
+        --data-urlencode "text=${text}" > /dev/null
+
+    # This send bypasses proactive_send (the running app isn't what's sending it), so
+    # save it to charlie.db directly here — otherwise Charlie has no memory of this
+    # message if Jonathan replies to it. Same architectural rule proactive_send exists
+    # to satisfy (see bugs.md). Text goes through a temp file, not a command-line arg,
+    # to avoid shell-quoting issues with arbitrary log content.
+    local tmpfile
+    tmpfile=$(mktemp)
+    printf '%s' "$text" > "$tmpfile"
+    (cd "$CHARLIE_ROOT" && venv/bin/python3 -c "
+import sys
+from core.history import save_message
+with open(sys.argv[1]) as f:
+    text = f.read()
+save_message(int(sys.argv[2]), 'assistant', text)
+" "$tmpfile" "$TOPIC_ID")
+    rm -f "$tmpfile"
 }
 
 MARK_LINE=$(wc -l < "$LOG" 2>/dev/null || echo 0)
