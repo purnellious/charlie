@@ -39,3 +39,13 @@ via /distil when closing a topic. Loaded into Charlie's system prompt alongside 
 - Handover plan: added to follow-ups, not yet drafted — still to be worked on
 
 ---
+
+**Job search & financial situation — 28 Jul 2026**
+
+- Chainlink role fell through — they changed the role and did not proceed with Jonathan
+- Human Agency is now the sole active job prospect; Jonathan proposed a trial period contract to the CEO, awaiting response
+- TS Group July salary not yet paid but payment considered possible
+- Moar Labs now has two bank accounts open (previously a blocker)
+- Handover plan remains on the list but no realistic near-term trigger
+
+---
