@@ -198,6 +198,35 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "restart_charlie",
+        "description": (
+            "Restart the Charlie service to load a build that touched code (see the "
+            "RESTART REQUIRED note from run_claude_code). Only call this after Jonathan "
+            "has explicitly said to restart now — never proactively. Returns immediately; "
+            "the actual result (success/failure) arrives a few seconds later as a "
+            "separate message in this topic, sent independently of this process."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "jonathan_confirmed": {
+                    "type": "boolean",
+                    "description": "Must be true — set only if Jonathan has just explicitly confirmed he wants to restart now."
+                },
+                "verify_script": {
+                    "type": "string",
+                    "description": (
+                        "Optional: path (relative to the charlie root) to a standalone "
+                        "script you wrote and ran during the build to test the new "
+                        "feature. If provided, it's re-run after restart as an extra "
+                        "check. Omit if no such script exists — do not invent one."
+                    )
+                }
+            },
+            "required": ["jonathan_confirmed"]
+        }
+    },
+    {
         "name": "propose_charlie_update",
         "description": (
             "Propose an update to charlie.md — your persistent context document about Jonathan. "
@@ -292,7 +321,13 @@ with a one-line entry (date + what changed). This keeps Claude Code sessions in 
 
 - **run_claude_code** — build new capabilities, write code, or make changes to Charlie itself. \
 Requires a declared tier, scope, and Principle 11 checklist. Tier 3 builds also require \
-Jonathan's explicit confirmation of the named risk before you call it
+Jonathan's explicit confirmation of the named risk before you call it. If the result says \
+RESTART REQUIRED, tell Jonathan plainly it's committed but not live, and ask before \
+restarting — never claim something is live when a restart is pending.
+- **restart_charlie** — restart the service to load a build that touched code. Only call \
+this after Jonathan has explicitly said to restart now. It returns immediately; the real \
+result (restarted cleanly, or failed) arrives moments later as a separate message — don't \
+assume success from the immediate tool result alone
 - **propose_charlie_update** — propose an update to your persistent context (charlie.md) \
 when you learn something important about Jonathan. He will review before it's saved.
 - **log_bug** — log a bug in bugs.md and open a dedicated Telegram topic for it
@@ -366,6 +401,7 @@ async def handle_turn(
     user_text: str,
     messages: list,
     send_fn,
+    topic_id: int = 0,
     thinking_enabled: bool = True,
     thinking_budget: int = 2000,
 ) -> tuple[list, dict | None]:
@@ -376,6 +412,8 @@ async def handle_turn(
         user_text: The user's message.
         messages: Full prior conversation history in Anthropic API format.
         send_fn: Async callable that sends a string to Telegram.
+        topic_id: Telegram thread_id of the current topic — needed by restart_charlie
+            so the detached restart script can report back into the right topic.
         thinking_enabled: Whether to show extended thinking.
         thinking_budget: Token budget for thinking (min 1024).
 
@@ -384,6 +422,7 @@ async def handle_turn(
         proposed_update is None or {"proposed_content": str, "reason": str}
     """
     from core.tools.claude_code import run as run_claude_code
+    from core.tools.restart import trigger_restart
 
     client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
     messages = messages + [{"role": "user", "content": user_text}]
@@ -453,6 +492,20 @@ async def handle_turn(
 
                 await send_fn(f"Running Claude Code (Tier {tier}): {task[:100]}...")
                 result = await run_claude_code(task, tier=tier, scope=scope)
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+
+            elif block.name == "restart_charlie":
+                if not block.input.get("jonathan_confirmed"):
+                    result = "Cannot restart — Jonathan must explicitly confirm before this is called."
+                else:
+                    result = await trigger_restart(
+                        topic_id=topic_id,
+                        verify_script=block.input.get("verify_script", ""),
+                    )
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,

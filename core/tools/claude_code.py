@@ -80,6 +80,13 @@ async def run(task: str, tier: str, scope: list) -> str:
             commit_note = await _auto_commit(task)
             if commit_note:
                 result += f"\n\n{commit_note}"
+                if _requires_restart(scope):
+                    result += (
+                        "\n\nRESTART REQUIRED — this build touched code, not just docs, "
+                        "so it is not live yet (Python does not hot-reload). Tell Jonathan "
+                        "plainly that it's committed but not live, and ask whether to "
+                        "restart now. Only call restart_charlie after he explicitly confirms."
+                    )
             return result
 
         except asyncio.TimeoutError:
@@ -116,6 +123,16 @@ async def _changed_files() -> list:
             path = path.split(" -> ")[-1].strip()
         files.append(path.strip('"'))
     return files
+
+
+_NON_CODE_EXTENSIONS = {".md", ".txt"}
+
+
+def _requires_restart(scope: list) -> bool:
+    """True unless every declared scope entry is a doc file (.md/.txt) — anything else
+    (code, config, scripts, or a bare directory) is treated as needing a restart to take
+    effect, since Python doesn't hot-reload. See BUG-002."""
+    return any(Path(entry).suffix not in _NON_CODE_EXTENSIONS for entry in scope)
 
 
 def _out_of_scope(files: list, scope: list) -> list:

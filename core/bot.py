@@ -162,6 +162,7 @@ async def _run_charlie_turn(update, context, topic_id: int, user_text: str):
             user_text=user_text,
             messages=messages,
             send_fn=send_fn,
+            topic_id=topic_id,
             thinking_enabled=THINKING_ENABLED,
             thinking_budget=THINKING_BUDGET,
         )
@@ -255,6 +256,7 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_text=charlie_instruction,
             messages=history,
             send_fn=charlie_send_fn,
+            topic_id=topic_id,
             thinking_enabled=THINKING_ENABLED,
             thinking_budget=THINKING_BUDGET,
         )
