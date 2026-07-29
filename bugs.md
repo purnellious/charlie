@@ -20,7 +20,7 @@ Open issues to be worked through over time. Newest bugs at the bottom.
 
 ## BUG-001 — SQLite message history grows indefinitely
 **Type:** Debt
-**Status:** Open
+**Status:** Closed
 **Priority:** Medium
 **Severity:** High — violates Jonathan's core data minimalism principle and accumulates sensitive conversation data indefinitely
 **Blocks anything current:** No — but will become a cost and privacy problem over time
@@ -34,8 +34,16 @@ All messages (user and assistant) are stored in `data/charlie.db` with no expiry
 **What needs fixing:**
 Decide on and implement a retention policy. Options: auto-delete after N days, topic-scoped retention only (wipe when topic goes inactive), or removing persistent history entirely and relying on Telegram's own record (fetched on demand). Also: the disclosure failure should be prevented going forward by the data architecture document (see BUG-003).
 
+**Resolved:** 2026-07-29 — ruled out "rely on Telegram's own record" (option 3): the Bot API has no endpoint to fetch a topic's history, only live updates as they arrive; doing this for real would mean authenticating as Jonathan's actual Telegram account instead of the bot, a materially bigger and less secure change. Went with a hybrid of the other two options: a topic becomes a candidate once **Jonathan's own last message** in it (not Charlie's scheduled posts — falls back to the topic's first message if he never replied) is 60+ days old. At that point: ≤20 messages deletes silently (low value); >20 messages gets a warning message with a 7-day grace period, cancelled by simply replying (no separate command needed — a reply is new activity, which pulls the topic out of contention on the next run). New daily scheduled job (`_run_retention_sweep`, 04:00) in `core/scheduler.py`; new `core/tools/retention.py`; new query/warning-tracking functions in `core/history.py` (new `deletion_warnings` table). `data-architecture.md`'s retention row for `charlie.db` updated to match.
+
+Also addresses the recurring-Telegram-topic-deletion concern raised in the same conversation: distilling before deleting a topic in Telegram (existing `/distil` workflow) already clears its DB row immediately, so nothing is ever actually orphaned for someone who distils first — the sweep here is the safety net for topics that just go quiet rather than being deliberately closed out.
+
+Note: this resolves the *retention* (disk/privacy) half of the original problem. The *per-turn API cost* half (a long-lived active topic resending its full history every message, regardless of age) was explicitly scoped out as a separate concern — discussed and deliberately deferred, not part of this fix.
+
+**Tested:** 7 scenarios against synthetic data on the always-on Mac's real venv (small-old-silent-delete, large-old-first-warning, warned-past-grace-delete, warned-within-grace-untouched, warned-then-replied-cancelled, recently-active-untouched, never-replied-falls-back-to-first-message) — all passed. Caught and fixed a real bug during testing: a naive "check for a reply since warned_at" approach was dead code (a reply already removes the topic from the stale-topics query before that check would run) and would have left orphaned warning rows that caused instant deletion with no fresh warning if a topic went stale again after being saved once. Fixed by clearing a topic's warning whenever it's no longer in the stale set. Confirmed against the real `charlie.db`: 0 topics currently qualify (oldest data is 58 days old), so the first scheduled run tonight won't do anything unexpected. Deployed and restarted cleanly on the always-on Mac — `_run_retention_sweep` confirmed registered in the scheduler log.
+
 **Touches:**
-`core/db.py`, `core/bot.py`
+`core/history.py`, `core/tools/retention.py` (new), `core/scheduler.py`, `data-architecture.md`.
 
 ---
 

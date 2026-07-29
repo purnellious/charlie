@@ -10,7 +10,7 @@ The following are the only sanctioned persistent stores. Nothing new is added wi
 
 | Store | Purpose | Retention |
 |---|---|---|
-| `data/charlie.db` (SQLite) | Message history per Telegram topic | Capped (see BUG-001); raw history deleted after /distil |
+| `data/charlie.db` (SQLite) | Message history per Telegram topic | 60 days of inactivity (measured by Jonathan's own last message in the topic, not Charlie's scheduled posts), then deleted — silently if ≤20 messages, otherwise a warning with a 7-day grace period first, cancelled by replying. See BUG-001. Also deleted immediately after `/distil`. |
 | `data/news.db` (SQLite) | RSS sources and fetched articles | Sources: indefinite. Articles: pruned after 7 days. |
 | `data/grants.db` (SQLite) | Verified grant/open-call opportunities + flagged entries | Indefinite; `opportunities` table: URL, title, deadline, source, category, description (≤500 chars), apply_link, first/last seen. `flagged` table: URL, title, flag reason, timestamp. No raw email or page content stored. |
 | `charlie.md` | Jonathan's persistent context | Indefinite; updated via propose_charlie_update approval flow |
