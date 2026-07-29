@@ -247,3 +247,25 @@ Build a /health or /status command in Telegram that checks all critical componen
 TBD
 
 ---
+
+## BUG-011 — No end-state verification checklist after builds
+**Type:** Rule
+**Status:** Open
+**Priority:** Medium
+**Severity:** Medium — builds get declared complete without confirming they actually work end-to-end from Jonathan's perspective
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-06-10
+**Topic ID:** 1086
+**Restored:** 2026-07-29 — this entry (along with BUG-012 and BUG-013) was silently deleted by an unrelated commit on 2026-07-08 ("Check all the RSS feeds..."), an unscoped task that shouldn't have touched bugs.md at all. Recovered from git history. BUG-012 and BUG-013 (World Cup topic issues) were reviewed and intentionally not restored — the World Cup module is deprecated, making them moot. This entry was judged still relevant and restored as-is.
+
+**Problem:**
+After a build completes, Charlie declares it "live" or "done" without running through a post-build checklist. Jonathan never gets confirmation that the tool works end-to-end, doesn't know how to monitor it, and doesn't know what failure looks like. The World Cup Tracker was declared live without Jonathan ever seeing a test Telegram notification arrive.
+
+**What needs fixing:**
+Add a mandatory post-build checklist to principles.md (Principle 9 or 11) that Charlie must run before closing any build: (1) has the happy path been verified end-to-end, (2) has Jonathan confirmed receipt of any user-facing output, (3) does Jonathan know how to check if it's running, (4) does Jonathan know what failure looks like, (5) has devlog.md been updated. Charlie should not say "we're live" until this checklist is complete.
+
+**Touches:**
+TBD
+
+---
