@@ -41,7 +41,7 @@ Decide on and implement a retention policy. Options: auto-delete after N days, t
 
 ## BUG-002 — No deployment verification step after builds
 **Type:** Bug
-**Status:** Open
+**Status:** Closed
 **Priority:** High
 **Severity:** High — causes Charlie to declare things "live" that aren't actually running, destroying trust in deployment announcements
 **Blocks anything current:** No — but affects every future build
@@ -55,8 +55,14 @@ After a Claude Code build, Charlie announces completion without verifying the se
 **What needs fixing:**
 After any Claude Code build, the workflow should automatically: (1) confirm the service has been restarted and is running the new code, (2) run a basic smoke test or health-check where possible, and (3) only declare something "live" once verified. If verification isn't possible automatically, Charlie should explicitly say "changes are deployed — restart required before testing" rather than "built and live."
 
+**Resolved:** 2026-07-29 — reuses BUG-006's `scope` field: `claude_code.py`'s `_requires_restart()` flags any build whose scope includes non-`.md` files (Python doesn't hot-reload, so a code change on disk doesn't affect the already-running process). `run_claude_code`'s result now says RESTART REQUIRED in that case instead of implying it's live, and Charlie is instructed to tell Jonathan plainly and ask before restarting — never restart automatically, since that's a system-state change (Principle 3) and self-restarting mid-conversation can't reliably report its own result.
+
+New `restart_charlie` tool (gated on an explicit `jonathan_confirmed` field, validated in Python) launches a **detached** script (`core/tools/restart_and_verify.sh`, spawned with `start_new_session=True` so it survives the very process it kills) that: stops/starts `com.charlie`, confirms a new PID is alive, tails `charlie.log` for a clean startup with no errors, optionally re-runs a build's own verify script if one was provided, and reports the result via a direct Telegram API call — deliberately not through the Python app, since that's what's being restarted. Layers are kept honest rather than conflated: a clean process-level check does NOT claim the feature itself was tested — Charlie is told to say so explicitly and ask Jonathan to try it, unless a build-specific verify script was actually re-run.
+
+**Verified for real, 2026-07-29:** (1) isolated proof that a `start_new_session=True` child survives its parent being abruptly killed (simulated the exact `launchctl stop` scenario locally before trusting it); (2) full live run on the always-on Mac — created a temporary Telegram topic, ran `restart_and_verify.sh` against the real `com.charlie` service, confirmed a new PID, a clean log, and a real delivered Telegram message, then deleted the test topic.
+
 **Touches:**
-`core/bot.py`, launchd service restart logic, Claude Code task template/workflow
+`core/tools/claude_code.py` (`_requires_restart`), `core/agent.py` (`restart_charlie` tool + dispatch + `topic_id` param on `handle_turn`), `core/bot.py` (`topic_id` threaded through both call sites), new `core/tools/restart.py` and `core/tools/restart_and_verify.sh`.
 
 ---
 
