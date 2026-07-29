@@ -136,7 +136,19 @@ Nothing is complete until it is verified to work. "It should work" is not done.
 - Regressions — breaking something that previously worked — must be caught before handoff
 - The pre-build checklist must include a testing plan
 
-**Violation signal:** A build declared complete without evidence it was tested; a regression introduced without detection.
+**Post-Build Checklist.** Before declaring any build "done" or "live," Claude Code must confirm:
+
+- [ ] The happy path has been verified end-to-end, not assumed
+- [ ] Jonathan has confirmed receipt of any user-facing output (e.g. a real Telegram message arrived) — not just that the code ran without error
+- [ ] Jonathan knows how to check whether it's running
+- [ ] Jonathan knows what failure looks like for this feature
+- [ ] `devlog.md` has been updated with a one-line entry
+- [ ] For Tier 2/3 builds (see Principle 11): a `/code-review` pass (and `/security-review` for Tier 3) has been run, and any findings addressed or explicitly deferred with Jonathan's sign-off
+- [ ] The files actually touched match the scope declared in the Pre-Build Checklist (Principle 11). Anything outside that scope is flagged to Jonathan before committing, not committed silently
+
+Do not say "we're live" until this checklist is complete.
+
+**Violation signal:** A build declared complete without evidence it was tested; a regression introduced without detection; a commit that touches files outside its declared scope without flagging it.
 
 ---
 
@@ -165,8 +177,20 @@ Before building any new feature, Claude Code must work through this checklist. T
 - [ ] Does this comply with the principles in this document?
 - [ ] What is the testing plan? How will completion be verified?
 - [ ] Does this build require updates to principles.md, charlie.md, or any other system document? If so, those updates must be proposed as part of the build.
+- [ ] What tier is this build (see Build Tiers below), and what does that tier require?
+- [ ] What files/areas will this build touch? This is the declared scope checked against Principle 9's post-build scope check.
 
 This checklist is the canonical source. BUG-006 references this document.
+
+**Build Tiers.** Not every build carries the same risk. The tier determines what Principle 9's post-build checklist requires in addition to its baseline items.
+
+| Tier | Examples | Additional requirements |
+|---|---|---|
+| **1 — Low** | Copy/prompt wording, log message changes, no persistence or behaviour change | None beyond the baseline post-build checklist |
+| **2 — Standard** | New tool, new scheduled job, edits to `agent.py` / `bot.py` / `scheduler.py`, or anything touching `bugs.md` / `principles.md` / `charlie.md` | Scope-diff check is mandatory (not just recommended); a `/code-review` pass before declaring done |
+| **3 — High** | Touches `.env` or credentials, shares data with a third party, deletes data, touches financial/legal data, or changes deployment/launchd config | Everything in Tier 2, plus: explicit approval from Jonathan to build (beyond the Planning Mode discussion) before Claude Code starts, a `/security-review` pass, and a live end-to-end test with confirmed output before anything is declared live |
+
+If the tier is unclear, treat it as the higher tier.
 
 ---
 

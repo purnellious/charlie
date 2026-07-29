@@ -153,6 +153,8 @@ The original problem (builds violating core principles without detection) remain
 **Why this was incorrectly closed:**
 BUG-006 was closed on 2026-06-03 when Principle 11 was added to `principles.md`. That resolved the absence of a written checklist, but not the absence of an enforcement mechanism. The distinction matters: a checklist that Claude Code can read and ignore is not meaningfully different from no checklist. Closing the bug conflated documentation with enforcement.
 
+**Updated:** 2026-07-29 — Principle 11 now also includes a Build Tier classification and a required file/scope declaration (feeds the new Principle 9 scope-diff check), and Principle 9 gained a matching Post-Build Checklist (resolves BUG-011). This makes the checklists more complete, but does not resolve this bug: nothing yet forces Claude Code to output its checklist answers or blocks a build from starting/committing if it hasn't. The enforcement mechanism described below is still unbuilt.
+
 **Touches:**
 `principles.md` (Principle 11 — Pre-Build Checklist), `core/tools/claude_code.py` (pre-call verification), Charlie system prompt or tool logic (checklist gate)
 
@@ -250,7 +252,7 @@ TBD
 
 ## BUG-011 — No end-state verification checklist after builds
 **Type:** Rule
-**Status:** Open
+**Status:** Closed
 **Priority:** Medium
 **Severity:** Medium — builds get declared complete without confirming they actually work end-to-end from Jonathan's perspective
 **Blocks anything current:** No
@@ -258,6 +260,7 @@ TBD
 **Logged:** 2026-06-10
 **Topic ID:** 1086
 **Restored:** 2026-07-29 — this entry (along with BUG-012 and BUG-013) was silently deleted by an unrelated commit on 2026-07-08 ("Check all the RSS feeds..."), an unscoped task that shouldn't have touched bugs.md at all. Recovered from git history. BUG-012 and BUG-013 (World Cup topic issues) were reviewed and intentionally not restored — the World Cup module is deprecated, making them moot. This entry was judged still relevant and restored as-is.
+**Resolved:** 2026-07-29 — the Post-Build Checklist called for here was added to Principle 9 in `principles.md`, covering all five items plus a scope-diff check and a `/code-review`/`/security-review` gate for Tier 2/3 builds (new Build Tiers section added to Principle 11). This resolves the documentation gap. Note: it still relies on Claude Code actually running the checklist each time — the same enforcement gap BUG-006 describes for the pre-build side applies here too, and isn't fixed by this change alone.
 
 **Problem:**
 After a build completes, Charlie declares it "live" or "done" without running through a post-build checklist. Jonathan never gets confirmation that the tool works end-to-end, doesn't know how to monitor it, and doesn't know what failure looks like. The World Cup Tracker was declared live without Jonathan ever seeing a test Telegram notification arrive.
