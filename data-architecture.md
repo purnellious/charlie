@@ -11,6 +11,7 @@ The following are the only sanctioned persistent stores. Nothing new is added wi
 | Store | Purpose | Retention |
 |---|---|---|
 | `data/charlie.db` (SQLite) | Message history per Telegram topic | 60 days of inactivity (measured by Jonathan's own last message in the topic, not Charlie's scheduled posts), then deleted — silently if ≤20 messages, otherwise a warning with a 7-day grace period first, cancelled by replying. See BUG-001. Also deleted immediately after `/distil`. |
+| `data/charlie.db` — `deletion_warnings` table | Tracks which topics have been warned of pending deletion and when, so the retention sweep doesn't re-warn every run and knows when the grace period elapses | Just `topic_id` + `warned_at` timestamp, no message content. Row is deleted as soon as the topic is deleted or the warning is cancelled (Jonathan replies). See BUG-001. |
 | `data/news.db` (SQLite) | RSS sources and fetched articles | Sources: indefinite. Articles: pruned after 7 days. |
 | `data/grants.db` (SQLite) | Verified grant/open-call opportunities + flagged entries | Indefinite; `opportunities` table: URL, title, deadline, source, category, description (≤500 chars), apply_link, first/last seen. `flagged` table: URL, title, flag reason, timestamp. No raw email or page content stored. |
 | `charlie.md` | Jonathan's persistent context | Indefinite; updated via propose_charlie_update approval flow |
@@ -98,4 +99,4 @@ Claude Code must:
 
 ---
 
-*Last updated: 2026-07-23 (Grants module added — grants.db, Gmail polling, Haiku verification)*
+*Last updated: 2026-07-29 (BUG-001 retention policy finalized for charlie.db; deletion_warnings table added)*

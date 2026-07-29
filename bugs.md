@@ -69,6 +69,8 @@ New `restart_charlie` tool (gated on an explicit `jonathan_confirmed` field, val
 
 **Verified for real, 2026-07-29:** (1) isolated proof that a `start_new_session=True` child survives its parent being abruptly killed (simulated the exact `launchctl stop` scenario locally before trusting it); (2) full live run on the always-on Mac — created a temporary Telegram topic, ran `restart_and_verify.sh` against the real `com.charlie` service, confirmed a new PID, a clean log, and a real delivered Telegram message, then deleted the test topic.
 
+**Follow-up, 2026-07-29 (found while discussing BUG-003):** the restart confirmation message is sent via a direct Telegram API call, bypassing `proactive_send` — which meant it wasn't being saved to `charlie.db`, the same failure mode `proactive_send` exists to prevent. Fixed: `send_telegram()` in `restart_and_verify.sh` now also calls `save_message()` directly (via a temp file, not a command-line argument, to survive arbitrary log content safely). Re-verified live on the always-on Mac with a second temporary topic — confirmed the message is now present in `charlie.db` after a real restart.
+
 **Touches:**
 `core/tools/claude_code.py` (`_requires_restart`), `core/agent.py` (`restart_charlie` tool + dispatch + `topic_id` param on `handle_turn`), `core/bot.py` (`topic_id` threaded through both call sites), new `core/tools/restart.py` and `core/tools/restart_and_verify.sh`.
 
@@ -76,7 +78,7 @@ New `restart_charlie` tool (gated on an explicit `jonathan_confirmed` field, val
 
 ## BUG-003 — No data architecture document
 **Type:** Debt
-**Status:** Open
+**Status:** Closed
 **Priority:** High
 **Severity:** High — without this, every new tool build risks violating Jonathan's data minimalism principle without anyone noticing until after the fact
 **Blocks anything current:** No — but should be consulted before any new tool is built
@@ -90,6 +92,10 @@ Jonathan has strong, clearly stated preferences about data minimalism and privac
 
 **Status note:**
 `data-architecture.md` was created on 2026-06-03. It documents authorised data stores, retention policies, what leaves the machine, prompt injection protection, and mandatory rules for Claude Code before any data-touching build. The document is active and should be reviewed and updated whenever a new tool is built. The retention policy item (linked to BUG-001) is still unresolved and noted in the document.
+
+**Resolved:** 2026-07-29 — the retention policy item that kept this open is now resolved (BUG-001 landed, `charlie.db`'s row updated with the real 60-day policy). Re-read the full document end to end while closing this out: everything else in it (what's never stored, what leaves the machine per module, future email/calendar rules, prompt injection protection, mandatory pre-build rules) is still accurate — no other stale sections found. Added the missing `deletion_warnings` table (new from BUG-001) to the Authorised Data Stores table for completeness, and bumped the "Last updated" footer.
+
+One thing this did **not** resolve, deliberately split off as its own bug rather than solved here: asking "when is the system actually forced to read this document" surfaced that it isn't — it's not in `CLAUDE.md`'s required-reading list and not loaded into Charlie's system prompt, unlike `principles.md`. Logged separately as **BUG-015**, since it's a distinct enforcement problem (same shape as BUG-006, but for this document) rather than a content gap in the document itself.
 
 **Touches:**
 `data-architecture.md` (exists; requires ongoing maintenance as new tools are added). Relevant to all future tool builds.
@@ -317,5 +323,29 @@ The cheaper, more proportionate lever, if action is ever wanted: replace the bla
 
 **Touches:**
 `core/tools/claude_code.py` (the `claude` CLI invocation flags in `run()`). Possibly `core/agent.py` / Telegram plumbing if the interactive route is ever chosen instead.
+
+---
+
+## BUG-015 — data-architecture.md is not actually loaded or required-read anywhere
+**Type:** Debt
+**Status:** Open
+**Priority:** Medium
+**Severity:** Medium — the document calls itself "a mandatory reference" and "Rules for Claude Code (Mandatory)," but nothing outside the document itself points to it, so that mandate only works if the builder already knows to open the file
+**Blocks anything current:** No
+**Rough effort:** Small-Medium (needs a decision on *how* it should be surfaced, not just where)
+**Logged:** 2026-07-29
+**Topic ID:** N/A (raised in a Claude Code planning session, while closing out BUG-003)
+
+**Context (why this was logged, in full, so it can be picked up cold):**
+Came up while closing BUG-003 ("no data architecture document"). That document (`data-architecture.md`) exists and is comprehensive — but when asked "when is the system forced to read that document?", a direct check found the answer is: never, mechanically. `principles.md`, `charlie.md`, `devlog.md`, and `context-archive.md` are all loaded fresh into Charlie's system prompt every turn (`_build_system_prompt()` in `core/agent.py`). `CLAUDE.md`'s "Required reading before any action" list names `principles.md`, `bugs.md`, and `devlog.md` explicitly for Claude Code sessions. A grep across every `.py` file plus `CLAUDE.md`/`principles.md` for "data-architecture" returned zero hits. The only place that tells anyone to consult it is a paragraph *inside the document itself* ("Rules for Claude Code (Mandatory): before building any feature that involves... check this document") — self-referential, so it only works if the builder already knows the file exists and opens it unprompted.
+
+**Problem:**
+This is structurally the same failure mode BUG-006 fixed for the Pre-Build Checklist: a rule that exists on paper with nothing forcing anyone to actually encounter it before it matters. The difference is BUG-006's checklist at least lived inside `principles.md`, which *was* already required reading — `data-architecture.md` isn't required reading anywhere, and isn't loaded into Charlie's context either, so a data-touching build could proceed without anyone (Charlie or Claude Code) ever seeing it.
+
+**What needs deciding (not just fixing) when this is picked up:**
+Where should this actually get read? Options worth weighing, not yet decided: (1) add it to `CLAUDE.md`'s required-reading list alongside `principles.md`/`bugs.md`/`devlog.md` — simplest, but only covers Claude Code sessions, not Charlie's own live conversations where a data decision could also get made; (2) load it into Charlie's system prompt like `principles.md` — covers both, but grows the system prompt (cost-conscious tradeoff, Principle 5); (3) fold its content directly into `principles.md` as a new principle, retiring it as a standalone file — reduces the "which document governs this" ambiguity but is a bigger structural change than it sounds, since `principles.md` is meant to stay lean and this document is fairly long. Whichever route, the Build Tier system (Principle 11) already asks "what data will be stored, and why?" for every build — worth cross-referencing rather than solving twice.
+
+**Touches:**
+`CLAUDE.md` and/or `core/agent.py` (`_build_system_prompt()`) and/or `principles.md`, depending on which option is chosen.
 
 ---
