@@ -2,11 +2,12 @@
 
 ## Required reading before any action
 
-Before making any change to this project, read these three files in full:
+Before making any change to this project, read these four files in full:
 
 1. **`principles.md`** — the non-negotiable design principles governing how Charlie is built. Every build decision must comply. Use the Pre-Build Checklist (Principle 11) before starting any new feature.
 2. **`bugs.md`** — current open bugs and their status. Do not build something that duplicates or conflicts with an open bug.
 3. **`devlog.md`** — recent changes. Understand what has changed before making further changes.
+4. **`data-architecture.md`** — the current data inventory and handling rules: what's stored, where, for how long, what leaves the machine, and prompt injection protection. Mandatory before any change touching data storage, external APIs, or data ingestion (see its own "Rules for Claude Code" section).
 
 ---
 

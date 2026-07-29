@@ -328,7 +328,7 @@ The cheaper, more proportionate lever, if action is ever wanted: replace the bla
 
 ## BUG-015 — data-architecture.md is not actually loaded or required-read anywhere
 **Type:** Debt
-**Status:** Open
+**Status:** Closed
 **Priority:** Medium
 **Severity:** Medium — the document calls itself "a mandatory reference" and "Rules for Claude Code (Mandatory)," but nothing outside the document itself points to it, so that mandate only works if the builder already knows to open the file
 **Blocks anything current:** No
@@ -344,6 +344,10 @@ This is structurally the same failure mode BUG-006 fixed for the Pre-Build Check
 
 **What needs deciding (not just fixing) when this is picked up:**
 Where should this actually get read? Options worth weighing, not yet decided: (1) add it to `CLAUDE.md`'s required-reading list alongside `principles.md`/`bugs.md`/`devlog.md` — simplest, but only covers Claude Code sessions, not Charlie's own live conversations where a data decision could also get made; (2) load it into Charlie's system prompt like `principles.md` — covers both, but grows the system prompt (cost-conscious tradeoff, Principle 5); (3) fold its content directly into `principles.md` as a new principle, retiring it as a standalone file — reduces the "which document governs this" ambiguity but is a bigger structural change than it sounds, since `principles.md` is meant to stay lean and this document is fairly long. Whichever route, the Build Tier system (Principle 11) already asks "what data will be stored, and why?" for every build — worth cross-referencing rather than solving twice.
+
+**Resolved:** 2026-07-29 — went with option (1). There are actually two separate "required reading" tracks in this system, not one: Charlie's live system prompt (`principles.md`, `charlie.md`, `devlog.md`, `context-archive.md`, reloaded every turn per `_build_system_prompt()`) versus Claude Code's build-time required reading (`CLAUDE.md`'s list — `principles.md`, `bugs.md`, `devlog.md`). Confirmed `bugs.md` is *never* loaded into Charlie's system prompt (no path constant, no `.read_text()` call for it anywhere in `agent.py`) — it's build-time-only, and `data-architecture.md`'s content has the same profile: decision-relevant only when something data-touching is being built, not during ordinary conversation. Added it to `CLAUDE.md`'s required-reading list as a fourth file, alongside `bugs.md`. Also added a one-line pointer from `principles.md`'s Pre-Build Checklist (the "what data will be stored" question) to `data-architecture.md`, so it's surfaced twice, not just once.
+
+**Accepted tradeoff:** this means Charlie's own live conversations don't have this document loaded — if Jonathan asks Charlie directly what's stored and for how long, Charlie won't have it memorized and would need to say so rather than answer from context. Deliberate: loading it into the system prompt like `principles.md` would mean paying its (growing) token cost on every single turn, for content that's only actually relevant a few times a week when something's being built. Option (2) or (3) remain available later if this tradeoff ever stops being the right one.
 
 **Touches:**
 `CLAUDE.md` and/or `core/agent.py` (`_build_system_prompt()`) and/or `principles.md`, depending on which option is chosen.

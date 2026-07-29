@@ -171,7 +171,7 @@ Before building any new feature, Claude Code must work through this checklist. T
 
 - [ ] What problem does this solve?
 - [ ] Does a simpler solution exist?
-- [ ] What data will be stored, and why?
+- [ ] What data will be stored, and why? (See `data-architecture.md` for the current inventory and rules — required reading before any data-touching build.)
 - [ ] Is there an approval step if the action is consequential?
 - [ ] What is the cost (money, complexity, maintenance)?
 - [ ] Does this comply with the principles in this document?
