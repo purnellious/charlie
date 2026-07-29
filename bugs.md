@@ -276,3 +276,30 @@ Add a mandatory post-build checklist to principles.md (Principle 9 or 11) that C
 TBD
 
 ---
+
+## BUG-014 — Claude Code runs with blanket --dangerously-skip-permissions; no mid-build pause for out-of-scope or risky actions
+**Type:** Debt
+**Status:** Open
+**Priority:** Low
+**Severity:** Low-Medium — no active failure, but a real residual gap that the BUG-006 scope-diff fix does not close
+**Blocks anything current:** No — deliberately deferred, not blocking anything
+**Rough effort:** Medium (requires evaluating Claude Code's permission/allowlist options, or a larger SDK-based rearchitecture if the interactive route is ever chosen)
+**Logged:** 2026-07-29
+**Topic ID:** N/A (raised in a Claude Code planning session, not a Telegram topic)
+
+**Context (why this was logged, in full, so it can be picked up cold):**
+This came up while designing the BUG-006 fix (schema-enforced tier/scope/checklist on `run_claude_code`, plus a post-run scope-diff gate in `core/tools/claude_code.py` that blocks auto-commit/push if Claude Code touches files outside its declared scope). Jonathan asked whether Claude Code's inability to pause mid-build and ask a question — e.g., when it discovers it needs to touch a file outside declared scope to do the job properly — was worth fixing with a bigger architectural change (an interactive session instead of a one-shot run).
+
+**Problem:**
+`core/tools/claude_code.py` invokes Claude Code as `claude --dangerously-skip-permissions --model ... -p <task>` — a single non-interactive, one-shot subprocess call with a 10-minute timeout. `--dangerously-skip-permissions` disables Claude Code's own built-in tool-approval prompts entirely for the duration of the run. The BUG-006 scope-diff fix bounds *file-level* risk well: any git-tracked file changed outside the declared scope blocks the commit/push and gets surfaced instead of silently landing on GitHub. But the scope-diff check only inspects `git status --porcelain` — it has no visibility into non-file actions taken during the run: network calls, hitting external APIs, deleting something outside the repo, or any other side effect that doesn't show up as a tracked file change. Those actions would normally be caught by Claude Code's own default permission prompts — but the blanket `--dangerously-skip-permissions` flag turns that off, precisely the mechanism that would otherwise ask before doing something risky.
+
+**Decision reached (why this is Open/deferred, not being built now):**
+Concluded this does NOT currently warrant a full interactive-pause architecture (e.g., moving off one-shot `-p` mode to a Claude Agent SDK session with a custom `canUseTool` callback that routes approval requests to Telegram and blocks until Jonathan replies). Reasoning: (1) that's a materially bigger project than BUG-006 asked for — a genuine rearchitecture, not a scoped fix; (2) it's disproportionate given Charlie/Claude Code builds are Jonathan-initiated, not adversarial, and low-stakes for a personal project; (3) per Principle 6 (Design with Foresight, Build with Discipline), don't build abstractions before they're needed. If this surfaces as an actual incident (not just a theoretical gap), that would be the trigger to revisit.
+
+**What needs fixing (when this is picked up):**
+The cheaper, more proportionate lever, if action is ever wanted: replace the blanket `--dangerously-skip-permissions` flag with a scoped tool-permission allowlist — e.g. auto-allow file edits within `~/charlie/` (so builds stay just as smooth) while still requiring approval for things like arbitrary bash/network calls. Check Claude Code's current CLI flags/settings for a permission-mode or `--allowedTools`-style option that could express this without needing full interactivity. The bigger interactive-pause option remains on the table for later but should be treated as its own separately-scoped build (Tier 2/3, its own Principle 11 checklist) — not bundled into a "quick fix."
+
+**Touches:**
+`core/tools/claude_code.py` (the `claude` CLI invocation flags in `run()`). Possibly `core/agent.py` / Telegram plumbing if the interactive route is ever chosen instead.
+
+---
