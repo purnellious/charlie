@@ -227,6 +227,26 @@ TOOLS = [
         }
     },
     {
+        "name": "record_email_feedback",
+        "description": (
+            "Record a correction to an email triage verdict, keyed by the [#id] shown in "
+            "an Email topic digest message. Use this when Jonathan corrects a verdict "
+            "(e.g. 'that one wasn't actually urgent', 'always treat invoices from X as "
+            "just FYI'). Recent corrections are fed into future triage so it calibrates "
+            "over time."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "email_id": {"type": "integer", "description": "The [#id] from the digest message."},
+                "original_verdict": {"type": "string", "description": "What the triage originally said."},
+                "user_correction": {"type": "string", "description": "What Jonathan actually wants."},
+                "context_snippet": {"type": "string", "description": "Sender and subject, for context."},
+            },
+            "required": ["email_id", "original_verdict", "user_correction"],
+        },
+    },
+    {
         "name": "propose_charlie_update",
         "description": (
             "Propose an update to charlie.md — your persistent context document about Jonathan. "
@@ -336,6 +356,8 @@ when you learn something important about Jonathan. He will review before it's sa
 - **news_add_source** / **news_remove_source** / **news_list_sources** — manage RSS feeds
 - **convene_council** — run a structured multi-voice brainstorm; have a composition discussion first \
 to determine which members are relevant, confirm with Jonathan, then call this tool
+- **record_email_feedback** — record a correction to an email triage verdict (keyed by the \
+[#id] in an Email topic digest) so future triage calibrates over time
 
 **Capabilities boundary:** You run exclusively on Jonathan's always-on Mac (10.0.0.119). \
 You cannot directly access or execute anything on his main Mac. If Jonathan asks you to do \
@@ -617,6 +639,20 @@ async def handle_turn(
             elif block.name == "news_list_sources":
                 from core.tools.news import tool_list_sources
                 result = tool_list_sources()
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+
+            elif block.name == "record_email_feedback":
+                from core.tools.email import record_feedback
+                result = record_feedback(
+                    email_id=block.input.get("email_id", 0),
+                    original_verdict=block.input.get("original_verdict", ""),
+                    user_correction=block.input.get("user_correction", ""),
+                    context_snippet=block.input.get("context_snippet", ""),
+                )
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,

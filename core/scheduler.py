@@ -229,6 +229,53 @@ async def _run_larica_briefing(app: Application):
         log.error(f"Larica briefing failed: {e}")
 
 
+_email_fail_count = 0
+
+
+async def _poll_inbox_email(app: Application):
+    """
+    Runs every 2 minutes. A failed poll self-heals at the next tick — unlike
+    the cron jobs above, there's no missed-slot retry logic needed here.
+    After 3 consecutive failures (~6 min), sends one bounded Telegram alert
+    so a silently-broken/expired credential doesn't just look like an
+    unexplained absence of email notifications. Re-alerts every 30 failures
+    thereafter (~hourly) rather than just once, so a sustained outage (e.g.
+    a revoked token that never gets fixed) doesn't quietly degrade back into
+    the exact silent-failure mode this alert exists to catch.
+    """
+    global _email_fail_count
+    group_id = os.getenv("TELEGRAM_GROUP_ID", "").strip()
+    if not group_id:
+        return
+    try:
+        from core.tools.email import poll_and_notify
+        await poll_and_notify(app, group_id)
+        _email_fail_count = 0
+    except Exception as e:
+        _email_fail_count += 1
+        log.error(f"Email inbox poll failed ({_email_fail_count} in a row): {e}")
+        if _email_fail_count == 3 or _email_fail_count % 30 == 0:
+            try:
+                from core.tools.email import send_alert
+                await send_alert(
+                    app, group_id,
+                    f"Email monitor has failed {_email_fail_count} times in a row. Last error: {e}",
+                )
+            except Exception as alert_e:
+                log.error(f"Email monitor failure alert itself failed: {alert_e}")
+
+
+async def _reconcile_email_topic(app: Application):
+    group_id = os.getenv("TELEGRAM_GROUP_ID", "").strip()
+    if not group_id:
+        return
+    try:
+        from core.tools.email import reconcile_email_topic
+        await reconcile_email_topic(app, group_id)
+    except Exception as e:
+        log.error(f"Email topic reconciliation failed: {e}")
+
+
 async def setup_scheduler(app: Application):
     group_id = os.getenv("TELEGRAM_GROUP_ID", "").strip()
     if not group_id:
@@ -300,6 +347,19 @@ async def setup_scheduler(app: Application):
         replace_existing=True,
         args=[app],
     )
+    scheduler.add_job(
+        _poll_inbox_email,
+        trigger="interval",
+        minutes=2,
+        args=[app],
+    )
+    scheduler.add_job(
+        _reconcile_email_topic,
+        trigger="cron",
+        hour=3,
+        minute=30,
+        args=[app],
+    )
     scheduler.start()
 
     log.info(f"Morning briefing scheduled for {briefing_time} ({timezone}) daily.")
@@ -309,6 +369,8 @@ async def setup_scheduler(app: Application):
     log.info(f"Grant finder pipeline scheduled for Monday 08:00 ({timezone}) weekly.")
     log.info(f"Retention sweep scheduled for 04:00 ({timezone}) daily.")
     log.info("Larica morning briefing scheduled for 08:00 America/New_York daily.")
+    log.info("Email inbox poll scheduled every 2 minutes.")
+    log.info(f"Email topic reconciliation scheduled for 03:30 ({timezone}) daily.")
     app.bot_data["scheduler"] = scheduler
 
 

@@ -14,6 +14,7 @@ The following are the only sanctioned persistent stores. Nothing new is added wi
 | `data/charlie.db` — `deletion_warnings` table | Tracks which topics have been warned of pending deletion and when, so the retention sweep doesn't re-warn every run and knows when the grace period elapses | Just `topic_id` + `warned_at` timestamp, no message content. Row is deleted as soon as the topic is deleted or the warning is cancelled (Jonathan replies). See BUG-001. |
 | `data/news.db` (SQLite) | RSS sources and fetched articles | Sources: indefinite. Articles: pruned after 7 days. |
 | `data/grants.db` (SQLite) | Verified grant/open-call opportunities + flagged entries | Indefinite; `opportunities` table: URL, title, deadline, source, category, description (≤500 chars), apply_link, first/last seen. `flagged` table: URL, title, flag reason, timestamp. No raw email or page content stored. |
+| `data/emails.db` (SQLite) | Real-time inbox monitor for `jonathan@ts.org` (read-only) — triage verdict + suggested action per email | `emails` table pruned at 30 days: dedup is already guaranteed by the `gmail_message_id` UNIQUE constraint, not by retention, so this is purely a bound on local growth plus enough history for a "what did I miss last week" query — not borrowed from another table's unrelated policy. `thread_id`/`labels` are stored though unused today (free from the API response already fetched; kept so a future filter/retriage feature isn't starting from zero history). No body/snippet column — email content is processed in memory only, per the rule below, never written to disk. `email_feedback` table (corrections used to calibrate future triage): capped at the most recent 200 rows, no time-based pruning (small, high-value). `sync_state`: a one-row table holding `last_synced` and the persisted Email topic id. |
 | `charlie.md` | Jonathan's persistent context | Indefinite; updated via propose_charlie_update approval flow |
 | `context-archive.md` | Distilled topic archives | Indefinite; append-only |
 | `bugs.md` | Bug and debt tracker | Indefinite |
@@ -44,6 +45,7 @@ The only authorised external data transmission is:
   - Grants module: scraped grant listing text (from public web pages) is sent to Haiku for L3 verification and categorisation. Gmail email bodies are sent to Haiku for grant extraction — raw email content is processed in memory only and never written to disk or DB. Only extracted opportunity metadata (title, URL, deadline) is persisted.
   - Council tool: the idea text and any context Jonathan provides is sent in parallel to multiple Sonnet instances (one per council member, two rounds, plus synthesis). Jonathan must explicitly invoke the council, so this is approved per-use.
   - Larica news module: article titles and descriptions (from public RSS feeds) are sent to Sonnet for selection and summarisation. No personal data is included. Same pattern as the news module above.
+  - Email monitor: the body of every new inbox message from `jonathan@ts.org` is sent to Haiku for triage (suggested action). Processed in memory only — never written to disk or DB; only the derived verdict (actionability, urgency, confidence, one-sentence summary) is persisted. No pre-filtering — this currently includes promotional/automated mail (deliberate v1 choice, revisit once feedback-based filtering exists).
 - **Telegram API** — messages sent/received via the bot. Approved.
 - **RSS feeds (outbound fetch)** — `core/tools/news.py` fetches configured public RSS feeds via feedparser. No personal data is sent; these are read-only HTTP requests to public URLs. Sources are managed via the news_add_source / news_remove_source tools.
 - **Larica news email (outbound)** — `core/tools/larica_news.py` fetches public RSS feeds daily, sends summaries to Sonnet, and emails the result to laricalschnell@gmail.com via Gmail SMTP. No personal data beyond the curated article summaries is included. Recipient approved by Jonathan.
@@ -52,15 +54,11 @@ No other third-party service receives Charlie data without Jonathan's explicit p
 
 ---
 
-## Email & Calendar Access Rules (Future)
+## Email Access Rules (Live) / Calendar Access Rules (Future)
 
-When email and/or calendar integrations are built, the following rules apply:
+**Email — live.** Scope: `jonathan@ts.org`, inbox only, `gmail.readonly` OAuth scope — no send, reply, forward, modify, or delete capability exists anywhere in the email monitor tool (`core/tools/email/`). Token lives at `core/tools/email/tokens/` (gitignored, never committed). Email content is processed **in memory only** — raw body is never written to disk or the database; only the derived triage verdict is stored (see the `data/emails.db` row above). Legal correspondence / privileged communications get no special handling yet — if this becomes a live concern, that heightened-caution rule (never store/send anything that appears privileged without explicit per-instance approval) still needs to be built, not assumed.
 
-- Email and calendar content is processed **in memory only**. Raw content is never written to disk or the database.
-- Summaries or extracted action items derived from emails may be stored, but must be clearly attributed and minimal.
-- Legal correspondence and privileged communications are treated with heightened caution. Raw content of anything that appears legally privileged is never stored or sent to the API without explicit per-instance approval.
-- OAuth tokens are stored in the system keychain or a local `.env` file. Never in the database, never committed to git.
-- Charlie reads only the accounts and folders explicitly scoped by Jonathan. Access scope is documented here when integrations are built.
+**Calendar — future.** When a calendar integration is built, the same rules apply: in-memory-only processing, only derived summaries stored, OAuth tokens never in the database, and Charlie reads only the accounts/calendars explicitly scoped by Jonathan (documented here once built).
 
 ---
 
@@ -101,4 +99,4 @@ Claude Code must:
 
 ---
 
-*Last updated: 2026-07-29 (BUG-001 retention policy finalized for charlie.db; deletion_warnings table added)*
+*Last updated: 2026-07-30 (email monitor tool built — `data/emails.db` row added, Email Access Rules flipped from Future to Live)*

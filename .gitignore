@@ -6,3 +6,5 @@ data/
 __pycache__/
 *.pyc
 *.log
+core/tools/email/credentials.json
+core/tools/email/tokens/

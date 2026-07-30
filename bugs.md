@@ -353,3 +353,43 @@ Where should this actually get read? Options worth weighing, not yet decided: (1
 `CLAUDE.md` and/or `core/agent.py` (`_build_system_prompt()`) and/or `principles.md`, depending on which option is chosen.
 
 ---
+
+## BUG-016 — Telegram topic-existence check duplicated instead of shared
+**Type:** Debt
+**Status:** Open
+**Priority:** Low
+**Severity:** Low — cosmetic duplication, not a functional bug
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-07-30
+
+**Problem:**
+`core/tools/bugs.py`'s `_topic_exists()` (probes via `unpin_all_forum_topic_messages`, treats a "thread" `BadRequest` as deletion, fails safe on anything unexpected) is the only existing implementation of "does this Telegram forum topic still exist." The new email monitor tool (`core/tools/email/`) needs the same check for its own persistent Email topic, but importing `bugs.py`'s private helper would be a tool-calling-tool dependency (Principle 1, Hub-and-Spokes). Building the email tool's own build scope didn't include touching `bugs.py`, so the ~15-line technique was duplicated locally in `core/tools/email/__init__.py::reconcile_email_topic` instead.
+
+**What needs fixing:**
+Extract a shared `core/telegram_utils.py` (or similar) with a single `topic_exists(bot, group_id, topic_id)` helper, and have both `bugs.py` and `core/tools/email/` call it. Not urgent — the duplication is small and low-risk, but will grow if a third topic-owning tool needs the same check later.
+
+**Touches:**
+`core/telegram_utils.py` (new), `core/tools/bugs.py`, `core/tools/email/__init__.py`
+
+---
+
+## BUG-017 — Topic-existence check can never actually detect a deleted topic (missing bot permission)
+**Type:** Bug
+**Status:** Open
+**Priority:** Low
+**Severity:** Low — fails safe (assumes the topic still exists), so the worst case is a deleted topic doesn't get auto-recreated; no data loss or incorrect risky assumption
+**Blocks anything current:** No
+**Rough effort:** Small (Telegram admin settings change) to Medium (if a different probe technique is wanted instead)
+**Logged:** 2026-07-30
+
+**Problem:**
+Found while live-testing the new email monitor's `reconcile_email_topic` against the real, valid "📧 Email" topic: the probe (`unpin_all_forum_topic_messages`, the same technique `core/tools/bugs.py`'s `_topic_exists()` uses) fails with "Not enough rights to manage pinned messages in the chat" — a `BadRequest` that doesn't match the "thread"/"message_thread" pattern used to detect an actually-deleted topic, so it falls into the fail-safe "assume exists" branch every single time, regardless of whether the topic is real or gone. This means the check has likely never actually detected a deleted topic for either tool — including `bugs.py`'s existing nightly 3am reconciliation, which uses the identical technique and almost certainly hits the same permission wall.
+
+**What needs fixing:**
+Either (a) grant the Charlie bot "manage pinned messages" admin rights in the Telegram group (a one-time Telegram admin-settings change only Jonathan can make), or (b) replace the probe with a technique that doesn't require that permission — e.g. attempting a cheap read-only call scoped to the topic and checking for a thread-not-found error instead of a pin-management call. Whichever fix is chosen should land in the shared helper from BUG-016, so both tools get the fix at once instead of twice.
+
+**Touches:**
+`core/tools/bugs.py`, `core/tools/email/__init__.py`, Telegram group admin settings (bot permissions)
+
+---
