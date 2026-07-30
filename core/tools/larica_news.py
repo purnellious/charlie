@@ -70,9 +70,9 @@ _SECTIONS = [
         "count": 1,
         "depth": "medium",
         "feeds": [
-            ("New Scientist", "https://www.newscientist.com/feed/home/"),
+            ("Healthline", "https://www.healthline.com/rss/health-news"),
+            ("Vox", "https://www.vox.com/rss/index.xml"),
             ("Popular Mechanics", "https://www.popularmechanics.com/rss/all.xml/"),
-            ("Greater Good Magazine", "https://greatergood.berkeley.edu/feed"),
         ],
     },
     {

@@ -2,6 +2,8 @@
 
 A shared record of significant changes. Both Claude Code and Charlie read this.
 
+2026-07-30: Updated Larica wellness feeds — replaced New Scientist (406 paywalled) and Greater Good Magazine (404) with Healthline and Vox main RSS. Scientific American skipped (both candidate URLs failed: scientificamerican.com/feed/ 404, rss.sciam.com connection error). Popular Mechanics verified still working. Dry-run confirmed: 5/5 sections, 0 errors.
+
 2026-07-30: Built Larica daily news email — core/tools/larica_news.py (RSS fetch + Sonnet summarisation + HTML builder), core/tools/larica_email.py (Gmail SMTP send), daily 08:00 America/New_York scheduler job. 5 sections: Top Stories, Art & Entertainment, NYC/Jersey City, Wellness & Growth, Heartwarming. Dry-run tested: 5/5 sections populated, all URLs valid, HTML structurally sound.
 
 2026-07-29: Resolved BUG-015 — data-architecture.md added to CLAUDE.md's required-reading list (4th file, alongside bugs.md), confirmed as build-time-only content rather than loaded into Charlie's system prompt like principles.md/charlie.md/devlog.md/context-archive.md (bugs.md already set this precedent — never loaded into agent.py's system prompt). Added a pointer from principles.md's Pre-Build Checklist too. Accepted tradeoff: Charlie's live conversations don't have this memorized, by design, to avoid paying its token cost every turn for content that's rarely conversation-relevant.
