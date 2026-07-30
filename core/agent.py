@@ -331,6 +331,47 @@ TOOLS = [
         }
     },
     {
+        "name": "propose_send_email",
+        "description": (
+            "Propose sending an email. This NEVER sends immediately — Jonathan is shown the "
+            "exact recipient, subject, and body, and it is only sent if he replies with the "
+            "literal phrase 'send it' in a separate message. Only call this when Jonathan has "
+            "explicitly asked you to draft or send something — never proactively, and never "
+            "assume success just because you called this tool. Use thread_id (from "
+            "search_email/read_email_thread/a digest line) to reply within an existing "
+            "conversation, properly threaded in Gmail — omit it to compose a fresh email."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient email address."},
+                "subject": {"type": "string", "description": "Subject line — ignored if thread_id is set, since the thread's own subject is used."},
+                "body": {"type": "string", "description": "Full email body text."},
+                "thread_id": {"type": "string", "description": "Optional — reply within this thread instead of composing fresh."},
+                "reason": {"type": "string", "description": "Brief context for the preview, e.g. what Jonathan asked for."},
+            },
+            "required": ["to", "body", "reason"],
+        },
+    },
+    {
+        "name": "propose_delete_email",
+        "description": (
+            "Propose deleting (trashing) an email thread. This NEVER deletes immediately — "
+            "Jonathan is shown what's being deleted and it only proceeds if he replies with "
+            "the literal phrase 'delete it' in a separate message. Trashing is reversible for "
+            "30 days (Gmail's own trash retention), never permanent. Only call this when "
+            "Jonathan has explicitly asked."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "thread_id": {"type": "string", "description": "Gmail thread_id to delete."},
+                "reason": {"type": "string", "description": "Brief context, e.g. what Jonathan asked for."},
+            },
+            "required": ["thread_id", "reason"],
+        },
+    },
+    {
         "name": "propose_charlie_update",
         "description": (
             "Propose an update to charlie.md — your persistent context document about Jonathan. "
@@ -449,6 +490,11 @@ thread_id, only when Jonathan explicitly asks. Self-mailbox actions only — nev
 forward, or delete anything (no such capability exists)
 - **propose_email_prefs_update** — propose an update to your persistent understanding of how \
 Jonathan wants email handled (email-preferences.md). He will review before it's saved.
+- **propose_send_email** / **propose_delete_email** — propose sending or deleting an email. \
+Neither ever executes immediately — each only fires if Jonathan replies with the exact literal \
+phrase ("send it" / "delete it") in a separate message. Never call these proactively, and never \
+tell Jonathan something was sent or deleted unless he has actually confirmed and you've seen \
+the result — these are proposals, not actions.
 
 **Capabilities boundary:** You run exclusively on Jonathan's always-on Mac (10.0.0.119). \
 You cannot directly access or execute anything on his main Mac. If Jonathan asks you to do \
@@ -532,8 +578,9 @@ async def handle_turn(
 
     Returns:
         (updated_messages, proposals)
-        proposals is {"charlie_doc": dict | None, "email_prefs": dict | None}, each
-        either None or {"proposed_content": str, "reason": str}.
+        proposals is {"charlie_doc": dict | None, "email_prefs": dict | None,
+        "send_email": dict | None, "delete_email": dict | None} — each None unless
+        the corresponding propose_* tool was called this turn.
     """
     from core.tools.claude_code import run as run_claude_code
     from core.tools.restart import trigger_restart
@@ -542,6 +589,8 @@ async def handle_turn(
     messages = messages + [{"role": "user", "content": user_text}]
     proposed_update = None
     proposed_email_prefs = None
+    proposed_send_email = None
+    proposed_delete_email = None
     # tool_result dicts (by reference — mutating these later also updates `messages`,
     # since they're the same objects) whose raw content must be scrubbed before this
     # function returns, so it never persists to charlie.db (see core/history.py's
@@ -652,6 +701,31 @@ async def handle_turn(
                     "type": "tool_result",
                     "tool_use_id": block.id,
                     "content": "Update proposed. Jonathan will review it.",
+                })
+
+            elif block.name == "propose_send_email":
+                proposed_send_email = {
+                    "to": block.input.get("to", ""),
+                    "subject": block.input.get("subject", ""),
+                    "body": block.input.get("body", ""),
+                    "thread_id": block.input.get("thread_id") or None,
+                    "reason": block.input.get("reason", ""),
+                }
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": "Send proposed. It will only send if Jonathan replies 'send it'.",
+                })
+
+            elif block.name == "propose_delete_email":
+                proposed_delete_email = {
+                    "thread_id": block.input.get("thread_id", ""),
+                    "reason": block.input.get("reason", ""),
+                }
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": "Delete proposed. It will only delete if Jonathan replies 'delete it'.",
                 })
 
             elif block.name == "log_bug":
@@ -841,7 +915,12 @@ async def handle_turn(
     for tr in raw_content_results:
         tr["content"] = "[email content — not persisted; call the tool again to re-fetch]"
 
-    return messages, {"charlie_doc": proposed_update, "email_prefs": proposed_email_prefs}
+    return messages, {
+        "charlie_doc": proposed_update,
+        "email_prefs": proposed_email_prefs,
+        "send_email": proposed_send_email,
+        "delete_email": proposed_delete_email,
+    }
 
 
 async def _send_thinking(thought: str, send_fn):

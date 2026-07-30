@@ -419,3 +419,23 @@ The real mitigation is structural, not verbal: consequential actions must requir
 `data-architecture.md`, `principles.md` (Principle 11 checklist), every future tool that acts on untrusted ingested content
 
 ---
+
+## BUG-019 — Gmail API calls in handle_turn()/on_message() block the event loop
+**Type:** Debt
+**Status:** Open
+**Priority:** Low
+**Severity:** Low — brief blocking per call (a single HTTP round-trip), not a hang; noticed while building send/delete, applies retroactively to every email tool, not something newly introduced
+**Blocks anything current:** No
+**Rough effort:** Small-Medium (wrap each call site in `asyncio.to_thread`, matching the pattern `core/tools/email/__init__.py::poll_and_notify` already uses for the background poller)
+**Logged:** 2026-07-30
+
+**Problem:**
+`search_email`, `read_email_thread`, `archive_email`, `mark_email_read`, `mark_email_unread` (all dispatched inside `handle_turn()`'s tool loop) and now the send/delete execution in `bot.py`'s `on_message()` all call synchronous `googleapiclient` methods directly from async functions, with no `asyncio.to_thread`/executor wrapping — unlike the background poller (`poll_and_notify`), which deliberately wraps its sync Gmail+Haiku pipeline this way specifically to avoid blocking the bot's event loop. Every Gmail-calling tool in the interactive conversation path currently blocks the whole bot (all topics, not just the one making the call) for the duration of that HTTP round-trip.
+
+**What needs fixing:**
+Wrap each direct Gmail API call site in `asyncio.to_thread(...)`, consistent with the already-proven pattern in `poll_and_notify`. Not urgent — round-trips are typically sub-second, and this has been true since `search_email`/`read_email_thread` shipped without complaint — but worth fixing in one pass across all the call sites rather than accreting more un-wrapped call sites with each new email tool.
+
+**Touches:**
+`core/agent.py` (tool dispatch branches), `core/bot.py` (send/delete execution blocks)
+
+---

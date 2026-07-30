@@ -41,6 +41,14 @@ PENDING_UPDATES: dict[int, dict] = {}
 # Pending email-preferences.md update proposals — keyed by topic_id
 PENDING_EMAIL_PREFS: dict[int, dict] = {}
 
+# Pending send-email proposals — keyed by topic_id. Distinct confirm phrase ("send it"),
+# not "approve" — this is the first capability that can contact a third party.
+PENDING_SEND_EMAIL: dict[int, dict] = {}
+
+# Pending delete-email (trash) proposals — keyed by topic_id. Distinct confirm phrase
+# ("delete it"), not "approve".
+PENDING_DELETE_EMAIL: dict[int, dict] = {}
+
 # Pending distillation proposals — keyed by topic_id
 # Value: {"distillate": str} or {"distillate": "NOTHING_TO_KEEP"}
 PENDING_DISTIL: dict[int, dict] = {}
@@ -75,6 +83,10 @@ def _other_pending_note(topic_id: int, just_resolved: str) -> str:
         notes.append("a pending charlie.md update — reply 'approve' or 'reject'")
     if just_resolved != "email_prefs" and topic_id in PENDING_EMAIL_PREFS:
         notes.append("a pending email-preferences.md update — reply 'approve' or 'reject'")
+    if just_resolved != "send_email" and topic_id in PENDING_SEND_EMAIL:
+        notes.append("a pending email to send — reply 'send it' or 'cancel'")
+    if just_resolved != "delete_email" and topic_id in PENDING_DELETE_EMAIL:
+        notes.append("a pending email delete — reply 'delete it' or 'cancel'")
     if not notes:
         return ""
     return "\n\n" + "\n".join(f"You also still have {n}." for n in notes)
@@ -162,6 +174,48 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_and_save(context.bot, topic_id, "Update discarded." + _other_pending_note(topic_id, "email_prefs"))
             return
 
+    # Handle send-it/cancel for pending send-email proposals. Distinct confirm phrase
+    # ("send it") deliberately not shared with "approve" — the first capability able to
+    # contact a third party gets its own unambiguous trigger.
+    if topic_id in PENDING_SEND_EMAIL:
+        response_lower = user_text.strip().lower()
+        if response_lower == "send it":
+            pending = PENDING_SEND_EMAIL.pop(topic_id)
+            try:
+                from core.tools.email.fetch import send_email
+                send_email(
+                    to=pending["to"], subject=pending["subject"],
+                    body=pending["body"], thread_id=pending["thread_id"],
+                )
+                await send_and_save(context.bot, topic_id, f"Sent to {pending['to']}." + _other_pending_note(topic_id, "send_email"))
+            except Exception as e:
+                log.error(f"Send failed for topic {topic_id}: {e}")
+                await send_and_save(context.bot, topic_id, f"Send failed: {e}" + _other_pending_note(topic_id, "send_email"))
+            return
+        elif response_lower in ("cancel", "no", "stop", "discard"):
+            PENDING_SEND_EMAIL.pop(topic_id)
+            await send_and_save(context.bot, topic_id, "Send cancelled." + _other_pending_note(topic_id, "send_email"))
+            return
+
+    # Handle delete-it/cancel for pending delete-email proposals. Distinct confirm phrase
+    # ("delete it"), same reasoning as send.
+    if topic_id in PENDING_DELETE_EMAIL:
+        response_lower = user_text.strip().lower()
+        if response_lower == "delete it":
+            pending = PENDING_DELETE_EMAIL.pop(topic_id)
+            try:
+                from core.tools.email.fetch import trash_thread
+                trash_thread(pending["thread_id"])
+                await send_and_save(context.bot, topic_id, "Deleted (moved to Trash — recoverable for 30 days)." + _other_pending_note(topic_id, "delete_email"))
+            except Exception as e:
+                log.error(f"Delete failed for topic {topic_id}: {e}")
+                await send_and_save(context.bot, topic_id, f"Delete failed: {e}" + _other_pending_note(topic_id, "delete_email"))
+            return
+        elif response_lower in ("cancel", "no", "stop", "discard"):
+            PENDING_DELETE_EMAIL.pop(topic_id)
+            await send_and_save(context.bot, topic_id, "Delete cancelled." + _other_pending_note(topic_id, "delete_email"))
+            return
+
     # Prevent overlapping turns in the same topic
     if topic_id in ACTIVE_TOPICS:
         await context.bot.send_message(
@@ -176,6 +230,47 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _run_charlie_turn(update, context, topic_id, user_text)
     finally:
         ACTIVE_TOPICS.discard(topic_id)
+
+
+def _send_email_proposal_text(p: dict) -> str:
+    thread_note = " (reply within existing thread)" if p.get("thread_id") else " (new email)"
+    if p.get("thread_id"):
+        # Grounds the preview in a real, freshly-fetched thread subject rather than the
+        # model's guess — same reasoning as _delete_email_proposal_text below — and mirrors
+        # the exact "Re: " prefix logic send_email() itself will apply at send time.
+        try:
+            from core.tools.email.fetch import get_thread_summary
+            orig_subject = get_thread_summary(p["thread_id"])["subject"]
+            subject_display = orig_subject if orig_subject.strip().lower().startswith("re:") else f"Re: {orig_subject}"
+        except Exception as e:
+            subject_display = f"(could not fetch thread subject: {e})"
+    else:
+        subject_display = p['subject']
+    return (
+        f"Proposed email to send{thread_note}\n\n"
+        f"To: {p['to']}\n"
+        f"Subject: {subject_display}\n\n"
+        f"{p['body']}\n\n"
+        f"Reason: {p['reason']}\n\n"
+        f"Reply 'send it' to send, or 'cancel' to discard."
+    )
+
+
+def _delete_email_proposal_text(p: dict) -> str:
+    # Grounds the preview in a real, freshly-fetched sender/subject rather than trusting
+    # only the model's free-text `reason` for what's being deleted.
+    try:
+        from core.tools.email.fetch import get_thread_summary
+        summary = get_thread_summary(p["thread_id"])
+        target = f"From: {summary['sender_name']} <{summary['sender_email']}> — {summary['subject']}"
+    except Exception as e:
+        target = f"(could not fetch thread details: {e})"
+    return (
+        f"Proposed delete (moved to Trash — recoverable for 30 days)\n\n"
+        f"{target}\n\n"
+        f"Reason: {p['reason']}\n\n"
+        f"Reply 'delete it' to delete, or 'cancel' to discard."
+    )
 
 
 async def _run_charlie_turn(update, context, topic_id: int, user_text: str):
@@ -242,6 +337,18 @@ async def _run_charlie_turn(update, context, topic_id: int, user_text: str):
             f"Reply 'approve' to save or 'reject' to discard."
         )
         await send_and_save(context.bot, topic_id, proposal_text)
+
+    # Handle a proposed send
+    proposed_send = proposals.get("send_email")
+    if proposed_send:
+        PENDING_SEND_EMAIL[topic_id] = proposed_send
+        await send_and_save(context.bot, topic_id, _send_email_proposal_text(proposed_send))
+
+    # Handle a proposed delete
+    proposed_delete = proposals.get("delete_email")
+    if proposed_delete:
+        PENDING_DELETE_EMAIL[topic_id] = proposed_delete
+        await send_and_save(context.bot, topic_id, _delete_email_proposal_text(proposed_delete))
 
 
 async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -346,6 +453,16 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Reply 'approve' to save or 'reject' to discard."
             )
             await send_and_save(context.bot, topic_id, proposal_text)
+
+        proposed_send = proposals.get("send_email")
+        if proposed_send:
+            PENDING_SEND_EMAIL[topic_id] = proposed_send
+            await send_and_save(context.bot, topic_id, _send_email_proposal_text(proposed_send))
+
+        proposed_delete = proposals.get("delete_email")
+        if proposed_delete:
+            PENDING_DELETE_EMAIL[topic_id] = proposed_delete
+            await send_and_save(context.bot, topic_id, _delete_email_proposal_text(proposed_delete))
     except Exception as e:
         log.error(f"Charlie's take failed for topic {topic_id}: {e}")
         await send_and_save(context.bot, topic_id, f"Charlie's take failed: {e}")

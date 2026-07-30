@@ -285,3 +285,78 @@ def mark_thread_unread(thread_id: str) -> None:
     service.users().threads().modify(
         userId="me", id=thread_id, body={"addLabelIds": ["UNREAD"]}
     ).execute()
+
+
+def get_thread_summary(thread_id: str) -> dict:
+    """
+    Metadata-only fetch (From/Subject/Date/Message-ID headers) of a thread's most recent
+    message — cheap, no body. Grounds delete-confirmation previews in real fetched data
+    rather than the model's paraphrase, and supplies the Message-ID needed for
+    send_email()'s reply threading.
+    """
+    service = _build_service()
+    thread = service.users().threads().get(
+        userId="me", id=thread_id, format="metadata",
+        metadataHeaders=["From", "Subject", "Date", "Message-ID"],
+    ).execute()
+    messages = sorted(thread.get("messages", []), key=lambda m: int(m.get("internalDate", 0)))
+    if not messages:
+        raise ValueError(f"Thread {thread_id} has no messages.")
+    last = messages[-1]
+    headers = {h["name"]: h["value"] for h in last.get("payload", {}).get("headers", [])}
+    display_name, sender_email = _parse_sender(headers.get("From", ""))
+    return {
+        "sender_name": display_name,
+        "sender_email": sender_email,
+        "subject": headers.get("Subject", "(no subject)"),
+        "message_id": headers.get("Message-ID"),
+    }
+
+
+def send_email(to: str, subject: str, body: str, thread_id: str | None = None) -> None:
+    """
+    Send an email via messages().send(). Rejects (raises ValueError) if `to` or `subject`
+    contains a control character (\\r or \\n) — no legitimate use needs one, and rejecting
+    is a simpler, safer guard against header injection than trying to sanitize it.
+
+    If thread_id is given, replies within that thread: fetches the original Message-ID via
+    get_thread_summary(), sets In-Reply-To/References headers and threadId on the send
+    body, and prefixes the subject with "Re: " (unless already present) — matching Gmail's
+    documented requirements for threading a reply.
+    """
+    from email.mime.text import MIMEText
+
+    if not to.strip():
+        raise ValueError("Refusing to send: 'to' is empty.")
+    if any(c in to for c in "\r\n") or any(c in subject for c in "\r\n"):
+        raise ValueError("Refusing to send: 'to' or 'subject' contains a control character.")
+
+    msg = MIMEText(body)
+    msg["To"] = to
+
+    body_dict = {}
+    if thread_id:
+        try:
+            summary = get_thread_summary(thread_id)
+        except Exception as e:
+            raise ValueError(f"Could not look up thread {thread_id} to reply within it: {e}")
+        orig_subject = summary["subject"]
+        msg["Subject"] = orig_subject if orig_subject.strip().lower().startswith("re:") else f"Re: {orig_subject}"
+        if summary.get("message_id"):
+            msg["In-Reply-To"] = summary["message_id"]
+            msg["References"] = summary["message_id"]
+        body_dict["threadId"] = thread_id
+    else:
+        msg["Subject"] = subject
+
+    body_dict["raw"] = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+
+    service = _build_service()
+    service.users().messages().send(userId="me", body=body_dict).execute()
+
+
+def trash_thread(thread_id: str) -> None:
+    """Move the whole thread to Trash — reversible (Gmail's own 30-day trash retention,
+    recoverable via threads().untrash()), never a permanent delete."""
+    service = _build_service()
+    service.users().threads().trash(userId="me", id=thread_id).execute()
