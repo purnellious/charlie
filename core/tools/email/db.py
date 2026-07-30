@@ -6,15 +6,17 @@ unused today, since they're free from the API response and would
 otherwise leave a permanent gap for a future filtering/retriage feature.
 """
 import json
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent.parent.parent.parent / "data" / "emails.db"
 
 EMAIL_RETENTION_DAYS = 30      # dedup relies on the UNIQUE constraint, not retention —
                                # this just bounds local growth + supports "what did I miss" queries
-FEEDBACK_RETENTION_CAP = 200   # small, high-value, kept by count rather than time
 
 
 def _conn() -> sqlite3.Connection:
@@ -47,16 +49,15 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_received_at ON emails(received_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_emails_thread_id ON emails(thread_id)")
 
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS email_feedback (
-                id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                email_id         INTEGER REFERENCES emails(id),
-                original_verdict TEXT    NOT NULL,
-                user_correction  TEXT    NOT NULL,
-                context_snippet  TEXT,
-                created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
-            )
-        """)
+        # Retired in favour of email-preferences.md (Jonathan confirmed dropping the
+        # existing correction rows rather than leaving the table orphaned).
+        table_exists = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='email_feedback'"
+        ).fetchone()[0]
+        if table_exists:
+            count = conn.execute("SELECT COUNT(*) FROM email_feedback").fetchone()[0]
+            log.info(f"Dropping email_feedback table — {count} row(s) permanently deleted")
+        conn.execute("DROP TABLE IF EXISTS email_feedback")
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS sync_state (
@@ -129,31 +130,6 @@ def mark_notified(email_id: int):
         )
 
 
-def get_email_by_id(email_id: int) -> sqlite3.Row | None:
-    with _conn() as conn:
-        return conn.execute("SELECT * FROM emails WHERE id=?", (email_id,)).fetchone()
-
-
-def add_feedback(email_id: int, original_verdict: str, user_correction: str, context_snippet: str = ""):
-    with _conn() as conn:
-        conn.execute(
-            "INSERT INTO email_feedback (email_id, original_verdict, user_correction, context_snippet) "
-            "VALUES (?, ?, ?, ?)",
-            (email_id, original_verdict, user_correction, context_snippet),
-        )
-    _prune_feedback()
-
-
-def get_recent_feedback(limit: int = 20) -> list[sqlite3.Row]:
-    with _conn() as conn:
-        return conn.execute(
-            """SELECT f.*, e.sender_email, e.subject FROM email_feedback f
-               LEFT JOIN emails e ON e.id = f.email_id
-               ORDER BY f.created_at DESC LIMIT ?""",
-            (limit,),
-        ).fetchall()
-
-
 def get_last_synced() -> str | None:
     with _conn() as conn:
         row = conn.execute("SELECT last_synced FROM sync_state WHERE id=1").fetchone()
@@ -184,14 +160,4 @@ def prune_old_emails(days: int = EMAIL_RETENTION_DAYS):
         conn.execute(
             "DELETE FROM emails WHERE received_at < ? AND notified_at IS NOT NULL",
             (cutoff,),
-        )
-
-
-def _prune_feedback(cap: int = FEEDBACK_RETENTION_CAP):
-    with _conn() as conn:
-        conn.execute(
-            """DELETE FROM email_feedback WHERE id NOT IN (
-                   SELECT id FROM email_feedback ORDER BY created_at DESC LIMIT ?
-               )""",
-            (cap,),
         )

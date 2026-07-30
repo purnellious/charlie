@@ -1,11 +1,14 @@
 """
 Claude Haiku triage for the email monitor tool. Produces a structured
 verdict (actionability, urgency, confidence, one-sentence suggested action)
-for a single email. Recent corrections are folded into the prompt so the
-verdict calibrates over time.
+for a single email. Charlie's evolving email-preferences.md (proposed and
+approved the same way charlie.md is) is folded into the prompt so the
+verdict calibrates over time — kept local to this tool file, per CLAUDE.md's
+"keep the base system prompt lean" rule, same as it worked before.
 """
 import logging
 import os
+from pathlib import Path
 
 import anthropic
 
@@ -13,31 +16,21 @@ log = logging.getLogger(__name__)
 
 MODEL = "claude-haiku-4-5-20251001"
 
-
-def format_feedback_examples(rows: list) -> str:
-    if not rows:
-        return ""
-    lines = ["Past corrections — use these to calibrate your judgement:"]
-    for f in rows:
-        if f["context_snippet"]:
-            ctx = f["context_snippet"]
-        elif f["sender_email"]:
-            ctx = f"{f['sender_email']} / {f['subject']}"
-        else:
-            ctx = "(original email no longer available)"  # pruned since this feedback was recorded
-        lines.append(f"  Email: {ctx}")
-        lines.append(f"  Verdict was: {f['original_verdict']}")
-        lines.append(f"  Correction: {f['user_correction']}")
-        lines.append("  ---")
-    return "\n".join(lines)
+EMAIL_PREFS_DOC = Path(__file__).parent.parent.parent.parent / "email-preferences.md"
 
 
-def triage_email(email: dict, feedback_rows: list) -> dict:
+def _load_email_preferences() -> str:
+    if EMAIL_PREFS_DOC.exists():
+        return EMAIL_PREFS_DOC.read_text().strip()
+    return ""
+
+
+def triage_email(email: dict) -> dict:
     """
     email: dict with sender_name, sender_email, subject, body (in-memory only).
     Returns {actionability, urgent, confidence, summary}.
     """
-    feedback_text = format_feedback_examples(feedback_rows)
+    preferences_text = _load_email_preferences()
 
     prompt = (
         f"From: {email['sender_name']} <{email['sender_email']}>\n"
@@ -57,7 +50,7 @@ def triage_email(email: dict, feedback_rows: list) -> dict:
     system = (
         "You are an email triage assistant. You only read and summarise — you never "
         "suggest sending, replying to, forwarding, or contacting anyone on the user's behalf."
-        + (f"\n\n{feedback_text}" if feedback_text else "")
+        + (f"\n\nStanding preferences for how Jonathan wants email handled:\n{preferences_text}" if preferences_text else "")
     )
 
     result = {

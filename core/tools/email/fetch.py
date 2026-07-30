@@ -172,3 +172,89 @@ def fetch_new_emails(since_iso: str | None) -> list[dict]:
             continue
 
     return parsed
+
+
+def search_emails(query: str, max_results: int = 10) -> list[dict]:
+    """
+    Live Gmail search across the whole mailbox (Gmail's search API already excludes
+    Spam/Trash by default, matching normal Gmail UI behaviour — no extra filtering
+    needed). `query` is a raw Gmail search string (from:, subject:, after:, has:attachment,
+    etc.) — the caller (Charlie) constructs it directly.
+
+    messages().list() only returns id/threadId, so metadata (sender/subject/date/snippet)
+    needs one metadata-only messages().get() call per result — no body/payload fetch,
+    bounded to max_results calls total.
+    """
+    service = _build_service()
+
+    result = service.users().messages().list(
+        userId="me", q=query, maxResults=max_results
+    ).execute()
+    refs = result.get("messages", [])
+
+    results = []
+    for ref in refs:
+        try:
+            msg = service.users().messages().get(
+                userId="me", id=ref["id"], format="metadata",
+                metadataHeaders=["From", "Subject", "Date"],
+            ).execute()
+
+            headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
+            sender_raw = headers.get("from", "")
+            display_name, sender_email = _parse_sender(sender_raw)
+
+            internal_date_ms = int(msg.get("internalDate", 0))
+            received_at = datetime.fromtimestamp(
+                internal_date_ms / 1000, tz=timezone.utc
+            ).isoformat()
+
+            results.append({
+                "gmail_message_id": msg["id"],
+                "thread_id": msg.get("threadId", ""),
+                "sender_name": display_name,
+                "sender_email": sender_email,
+                "subject": headers.get("subject", "(no subject)"),
+                "received_at": received_at,
+                "snippet": msg.get("snippet", ""),
+            })
+        except Exception as e:
+            log.warning(f"Failed to fetch metadata for search result {ref['id']}: {e}")
+            continue
+
+    return results
+
+
+def get_thread_content(thread_id: str, max_chars: int = 8000) -> str:
+    """
+    Fetch every message in a thread, chronological, full body per message — deliberately
+    does NOT strip quoted content (unlike fetch_new_emails' triage-tuned extraction),
+    since reading an old conversation's quoted history is usually the point. Truncated
+    at max_chars to bound token cost on a runaway-long thread.
+    """
+    service = _build_service()
+    thread = service.users().threads().get(userId="me", id=thread_id, format="full").execute()
+
+    # Sort explicitly rather than assume the API response is already ordered.
+    messages = sorted(thread.get("messages", []), key=lambda m: int(m.get("internalDate", 0)))
+
+    parts = []
+    for msg in messages:
+        payload = msg.get("payload", {})
+        headers = {h["name"].lower(): h["value"] for h in payload.get("headers", [])}
+        sender_raw = headers.get("from", "")
+        display_name, sender_email = _parse_sender(sender_raw)
+        subject = headers.get("subject", "(no subject)")
+
+        internal_date_ms = int(msg.get("internalDate", 0))
+        received_at = datetime.fromtimestamp(
+            internal_date_ms / 1000, tz=timezone.utc
+        ).strftime("%Y-%m-%d %H:%M")
+
+        body = _extract_body(payload).strip()
+        parts.append(f"[{received_at}] From: {display_name} <{sender_email}>\nSubject: {subject}\n\n{body}")
+
+    combined = "\n\n---\n\n".join(parts)
+    if len(combined) > max_chars:
+        combined = combined[:max_chars] + "\n\n[truncated]"
+    return combined

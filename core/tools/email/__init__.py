@@ -78,10 +78,9 @@ def _poll_sync() -> int:
         db.set_last_synced(now_iso)
         return 0
 
-    feedback_rows = db.get_recent_feedback(limit=20)
     new_count = 0
     for email in unseen:
-        verdict = triage_email(email, feedback_rows)
+        verdict = triage_email(email)
         row_id = db.insert_triaged_email(email, verdict)
         if row_id is None:
             continue  # defensive — filter_unseen should already exclude duplicates
@@ -144,12 +143,3 @@ async def reconcile_email_topic(app, group_id: str) -> None:
             log.warning(f"Unexpected error checking Email topic {topic_id}: {e}")
     except Exception as e:
         log.warning(f"Could not verify Email topic {topic_id}: {e}")
-
-
-def record_feedback(email_id: int, original_verdict: str, user_correction: str, context_snippet: str = "") -> str:
-    """Sync — called directly from agent.py's tool dispatch. Validates email_id first."""
-    row = db.get_email_by_id(email_id)
-    if not row:
-        return f"No email found with id {email_id} — check the [#id] in the digest message."
-    db.add_feedback(email_id, original_verdict, user_correction, context_snippet)
-    return f"Got it — I'll factor that into future triage for emails like this one."

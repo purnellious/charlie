@@ -227,24 +227,64 @@ TOOLS = [
         }
     },
     {
-        "name": "record_email_feedback",
+        "name": "search_email",
         "description": (
-            "Record a correction to an email triage verdict, keyed by the [#id] shown in "
-            "an Email topic digest message. Use this when Jonathan corrects a verdict "
-            "(e.g. 'that one wasn't actually urgent', 'always treat invoices from X as "
-            "just FYI'). Recent corrections are fed into future triage so it calibrates "
-            "over time."
+            "Search Jonathan's whole mailbox live (not limited to recent/inbox mail). Use "
+            "when he asks about a specific sender, topic, or wants to find something in his "
+            "email. `query` is a raw Gmail search string — use Gmail's own operators, e.g. "
+            "'from:xero.com', 'subject:invoice', 'after:2026/01/01', 'has:attachment', or "
+            "combine them ('from:jane subject:contract'). Returns metadata + a short snippet "
+            "per match, not full bodies — call read_email_thread on a result's thread_id to "
+            "read the full content."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "email_id": {"type": "integer", "description": "The [#id] from the digest message."},
-                "original_verdict": {"type": "string", "description": "What the triage originally said."},
-                "user_correction": {"type": "string", "description": "What Jonathan actually wants."},
-                "context_snippet": {"type": "string", "description": "Sender and subject, for context."},
+                "query": {"type": "string", "description": "Raw Gmail search query string."},
+                "max_results": {"type": "integer", "description": "Max matches to return (default 10)."},
             },
-            "required": ["email_id", "original_verdict", "user_correction"],
+            "required": ["query"],
         },
+    },
+    {
+        "name": "read_email_thread",
+        "description": (
+            "Fetch the full content of an email thread (all messages, chronological, full "
+            "bodies including quoted history) by thread_id — get thread_id from a search_email "
+            "result or an Email topic digest. Use when Jonathan asks you to read, summarise, "
+            "or recall the details of a specific email or conversation."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "thread_id": {"type": "string", "description": "Gmail thread_id to read."},
+            },
+            "required": ["thread_id"],
+        },
+    },
+    {
+        "name": "propose_email_prefs_update",
+        "description": (
+            "Propose an update to email-preferences.md — your persistent understanding of how "
+            "Jonathan wants email handled (which senders/topics matter, tone, standing rules). "
+            "Use this when you learn a pattern worth remembering from a correction or an email "
+            "conversation. Pass the full proposed new content. Jonathan will approve or reject "
+            "before anything is saved."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "proposed_content": {
+                    "type": "string",
+                    "description": "Full proposed new content of email-preferences.md."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Brief explanation of what you learned and why it's worth saving."
+                }
+            },
+            "required": ["proposed_content", "reason"]
+        }
     },
     {
         "name": "propose_charlie_update",
@@ -356,8 +396,12 @@ when you learn something important about Jonathan. He will review before it's sa
 - **news_add_source** / **news_remove_source** / **news_list_sources** — manage RSS feeds
 - **convene_council** — run a structured multi-voice brainstorm; have a composition discussion first \
 to determine which members are relevant, confirm with Jonathan, then call this tool
-- **record_email_feedback** — record a correction to an email triage verdict (keyed by the \
-[#id] in an Email topic digest) so future triage calibrates over time
+- **search_email** — live search of Jonathan's whole mailbox using Gmail query syntax; use \
+this whenever he asks about a specific email, sender, or topic in his inbox
+- **read_email_thread** — fetch the full content of an email thread by thread_id (from a \
+search_email result or an Email topic digest); use when he wants the actual content, not just a summary
+- **propose_email_prefs_update** — propose an update to your persistent understanding of how \
+Jonathan wants email handled (email-preferences.md). He will review before it's saved.
 
 **Capabilities boundary:** You run exclusively on Jonathan's always-on Mac (10.0.0.119). \
 You cannot directly access or execute anything on his main Mac. If Jonathan asks you to do \
@@ -426,7 +470,7 @@ async def handle_turn(
     topic_id: int = 0,
     thinking_enabled: bool = True,
     thinking_budget: int = 2000,
-) -> tuple[list, dict | None]:
+) -> tuple[list, dict]:
     """
     Run one Charlie turn.
 
@@ -440,8 +484,9 @@ async def handle_turn(
         thinking_budget: Token budget for thinking (min 1024).
 
     Returns:
-        (updated_messages, proposed_update)
-        proposed_update is None or {"proposed_content": str, "reason": str}
+        (updated_messages, proposals)
+        proposals is {"charlie_doc": dict | None, "email_prefs": dict | None}, each
+        either None or {"proposed_content": str, "reason": str}.
     """
     from core.tools.claude_code import run as run_claude_code
     from core.tools.restart import trigger_restart
@@ -449,6 +494,12 @@ async def handle_turn(
     client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
     messages = messages + [{"role": "user", "content": user_text}]
     proposed_update = None
+    proposed_email_prefs = None
+    # tool_result dicts (by reference — mutating these later also updates `messages`,
+    # since they're the same objects) whose raw content must be scrubbed before this
+    # function returns, so it never persists to charlie.db (see core/history.py's
+    # existing precedent of stripping thinking blocks before storage).
+    raw_content_results = []
 
     while True:
         create_kwargs = dict(
@@ -536,6 +587,17 @@ async def handle_turn(
 
             elif block.name == "propose_charlie_update":
                 proposed_update = {
+                    "proposed_content": block.input.get("proposed_content", ""),
+                    "reason": block.input.get("reason", ""),
+                }
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": "Update proposed. Jonathan will review it.",
+                })
+
+            elif block.name == "propose_email_prefs_update":
+                proposed_email_prefs = {
                     "proposed_content": block.input.get("proposed_content", ""),
                     "reason": block.input.get("reason", ""),
                 }
@@ -645,19 +707,49 @@ async def handle_turn(
                     "content": result,
                 })
 
-            elif block.name == "record_email_feedback":
-                from core.tools.email import record_feedback
-                result = record_feedback(
-                    email_id=block.input.get("email_id", 0),
-                    original_verdict=block.input.get("original_verdict", ""),
-                    user_correction=block.input.get("user_correction", ""),
-                    context_snippet=block.input.get("context_snippet", ""),
-                )
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": result,
-                })
+            elif block.name == "search_email":
+                from core.tools.email.fetch import search_emails
+                has_content = False
+                try:
+                    matches = search_emails(
+                        query=block.input.get("query", ""),
+                        max_results=block.input.get("max_results", 10),
+                    )
+                    if not matches:
+                        result = "No matching emails found."
+                    else:
+                        lines = [
+                            f"[{m['received_at'][:10]}] From: {m['sender_name']} <{m['sender_email']}> — "
+                            f"{m['subject']} (thread_id={m['thread_id']})\n  {m['snippet']}"
+                            for m in matches
+                        ]
+                        result = "\n\n".join(lines)
+                        has_content = True
+                except Exception as e:
+                    result = f"Search failed: {e}"
+                tr = {"type": "tool_result", "tool_use_id": block.id, "content": result}
+                tool_results.append(tr)
+                if has_content:
+                    # Only scrub when real content was returned — scrubbing a "no
+                    # results"/error message would misleadingly look, on the next
+                    # turn's reloaded history, like content was fetched and hidden.
+                    raw_content_results.append(tr)
+
+            elif block.name == "read_email_thread":
+                from core.tools.email.fetch import get_thread_content
+                has_content = False
+                try:
+                    result = get_thread_content(block.input.get("thread_id", ""))
+                    if not result:
+                        result = "Thread not found or empty."
+                    else:
+                        has_content = True
+                except Exception as e:
+                    result = f"Could not read thread: {e}"
+                tr = {"type": "tool_result", "tool_use_id": block.id, "content": result}
+                tool_results.append(tr)
+                if has_content:
+                    raw_content_results.append(tr)
 
             else:
                 tool_results.append({
@@ -668,7 +760,14 @@ async def handle_turn(
 
         messages = messages + [{"role": "user", "content": tool_results}]
 
-    return messages, proposed_update
+    # Scrub raw email content AFTER the loop exits — Charlie has already reasoned over
+    # the real content within this turn (possibly across several tool-loop iterations),
+    # but it must never be what gets persisted to charlie.db. Mutating in place here
+    # updates the same dicts already referenced inside `messages`.
+    for tr in raw_content_results:
+        tr["content"] = "[email content — not persisted; call the tool again to re-fetch]"
+
+    return messages, {"charlie_doc": proposed_update, "email_prefs": proposed_email_prefs}
 
 
 async def _send_thinking(thought: str, send_fn):

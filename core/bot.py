@@ -38,6 +38,9 @@ THINKING_BUDGET = int(os.getenv("THINKING_BUDGET", "2000"))
 # Pending charlie.md update proposals — keyed by topic_id
 PENDING_UPDATES: dict[int, dict] = {}
 
+# Pending email-preferences.md update proposals — keyed by topic_id
+PENDING_EMAIL_PREFS: dict[int, dict] = {}
+
 # Pending distillation proposals — keyed by topic_id
 # Value: {"distillate": str} or {"distillate": "NOTHING_TO_KEEP"}
 PENDING_DISTIL: dict[int, dict] = {}
@@ -54,6 +57,27 @@ async def send_and_save(bot, topic_id: int, text: str):
         message_thread_id=topic_id,
     )
     save_message(topic_id, "assistant", text)
+
+
+def _other_pending_note(topic_id: int, just_resolved: str) -> str:
+    """
+    Cheap collision mitigation: PENDING_DISTIL/PENDING_UPDATES/PENDING_EMAIL_PREFS can
+    already (pre-existing, not introduced here) all independently be pending for the same
+    topic at once, with the same 'approve'/'reject' words resolving whichever is checked
+    first. Rather than leave the others silently waiting on an unprompted reply, re-
+    surface every one still pending immediately after resolving one — a genuine three-way
+    collision means two others could still be waiting, not just one.
+    """
+    notes = []
+    if just_resolved != "distil" and topic_id in PENDING_DISTIL:
+        notes.append("a pending distillation — reply 'approve', 'discard', or 'reject'")
+    if just_resolved != "charlie_doc" and topic_id in PENDING_UPDATES:
+        notes.append("a pending charlie.md update — reply 'approve' or 'reject'")
+    if just_resolved != "email_prefs" and topic_id in PENDING_EMAIL_PREFS:
+        notes.append("a pending email-preferences.md update — reply 'approve' or 'reject'")
+    if not notes:
+        return ""
+    return "\n\n" + "\n".join(f"You also still have {n}." for n in notes)
 
 
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -97,19 +121,19 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             PENDING_DISTIL.pop(topic_id)
             if distillate != "NOTHING_TO_KEEP":
                 _append_to_context_archive(distillate)
-                await send_and_save(context.bot, topic_id, "Saved to context-archive.md. Conversation history deleted.")
+                await send_and_save(context.bot, topic_id, "Saved to context-archive.md. Conversation history deleted." + _other_pending_note(topic_id, "distil"))
             else:
-                await send_and_save(context.bot, topic_id, "Nothing to archive. Conversation history deleted.")
+                await send_and_save(context.bot, topic_id, "Nothing to archive. Conversation history deleted." + _other_pending_note(topic_id, "distil"))
             delete_topic_history(topic_id)
             return
         elif response_lower == "discard":
             PENDING_DISTIL.pop(topic_id)
             delete_topic_history(topic_id)
-            await send_and_save(context.bot, topic_id, "Conversation history deleted. Nothing archived.")
+            await send_and_save(context.bot, topic_id, "Conversation history deleted. Nothing archived." + _other_pending_note(topic_id, "distil"))
             return
         elif response_lower == "reject":
             PENDING_DISTIL.pop(topic_id)
-            await send_and_save(context.bot, topic_id, "Distillation rejected. History kept — run /distil again if you want to retry.")
+            await send_and_save(context.bot, topic_id, "Distillation rejected. History kept — run /distil again if you want to retry." + _other_pending_note(topic_id, "distil"))
             return
 
     # Handle approve/reject for pending charlie.md update proposals
@@ -118,11 +142,24 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if response_lower in ("approve", "yes", "ok", "save"):
             update_data = PENDING_UPDATES.pop(topic_id)
             _write_charlie_doc(update_data["proposed_content"])
-            await send_and_save(context.bot, topic_id, "charlie.md updated.")
+            await send_and_save(context.bot, topic_id, "charlie.md updated." + _other_pending_note(topic_id, "charlie_doc"))
             return
         elif response_lower in ("reject", "no", "skip", "discard"):
             PENDING_UPDATES.pop(topic_id)
-            await send_and_save(context.bot, topic_id, "Update discarded.")
+            await send_and_save(context.bot, topic_id, "Update discarded." + _other_pending_note(topic_id, "charlie_doc"))
+            return
+
+    # Handle approve/reject for pending email-preferences.md update proposals
+    if topic_id in PENDING_EMAIL_PREFS:
+        response_lower = user_text.strip().lower()
+        if response_lower in ("approve", "yes", "ok", "save"):
+            update_data = PENDING_EMAIL_PREFS.pop(topic_id)
+            _write_email_prefs_doc(update_data["proposed_content"])
+            await send_and_save(context.bot, topic_id, "email-preferences.md updated." + _other_pending_note(topic_id, "email_prefs"))
+            return
+        elif response_lower in ("reject", "no", "skip", "discard"):
+            PENDING_EMAIL_PREFS.pop(topic_id)
+            await send_and_save(context.bot, topic_id, "Update discarded." + _other_pending_note(topic_id, "email_prefs"))
             return
 
     # Prevent overlapping turns in the same topic
@@ -158,7 +195,7 @@ async def _run_charlie_turn(update, context, topic_id: int, user_text: str):
     old_count = len(messages)
 
     try:
-        updated_messages, proposed_update = await handle_turn(
+        updated_messages, proposals = await handle_turn(
             user_text=user_text,
             messages=messages,
             send_fn=send_fn,
@@ -177,6 +214,7 @@ async def _run_charlie_turn(update, context, topic_id: int, user_text: str):
         save_message(topic_id, msg["role"], msg["content"])
 
     # Handle a proposed charlie.md update
+    proposed_update = proposals.get("charlie_doc")
     if proposed_update:
         PENDING_UPDATES[topic_id] = proposed_update
         preview = proposed_update["proposed_content"]
@@ -185,6 +223,21 @@ async def _run_charlie_turn(update, context, topic_id: int, user_text: str):
         proposal_text = (
             f"Proposed update to charlie.md\n\n"
             f"Reason: {proposed_update['reason']}\n\n"
+            f"---\n{preview}\n---\n\n"
+            f"Reply 'approve' to save or 'reject' to discard."
+        )
+        await send_and_save(context.bot, topic_id, proposal_text)
+
+    # Handle a proposed email-preferences.md update
+    proposed_email_prefs = proposals.get("email_prefs")
+    if proposed_email_prefs:
+        PENDING_EMAIL_PREFS[topic_id] = proposed_email_prefs
+        preview = proposed_email_prefs["proposed_content"]
+        if len(preview) > 800:
+            preview = preview[:800] + "\n...[truncated]"
+        proposal_text = (
+            f"Proposed update to email-preferences.md\n\n"
+            f"Reason: {proposed_email_prefs['reason']}\n\n"
             f"---\n{preview}\n---\n\n"
             f"Reply 'approve' to save or 'reject' to discard."
         )
@@ -252,7 +305,7 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         from core.agent import handle_turn
-        _, proposed_update = await handle_turn(
+        _, proposals = await handle_turn(
             user_text=charlie_instruction,
             messages=history,
             send_fn=charlie_send_fn,
@@ -266,6 +319,7 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if charlie_take_parts:
             save_message(topic_id, "assistant", "[Charlie's take]\n\n" + "\n".join(charlie_take_parts))
 
+        proposed_update = proposals.get("charlie_doc")
         if proposed_update:
             PENDING_UPDATES[topic_id] = proposed_update
             preview = proposed_update["proposed_content"]
@@ -274,6 +328,20 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             proposal_text = (
                 f"Proposed update to charlie.md\n\n"
                 f"Reason: {proposed_update['reason']}\n\n"
+                f"---\n{preview}\n---\n\n"
+                f"Reply 'approve' to save or 'reject' to discard."
+            )
+            await send_and_save(context.bot, topic_id, proposal_text)
+
+        proposed_email_prefs = proposals.get("email_prefs")
+        if proposed_email_prefs:
+            PENDING_EMAIL_PREFS[topic_id] = proposed_email_prefs
+            preview = proposed_email_prefs["proposed_content"]
+            if len(preview) > 800:
+                preview = preview[:800] + "\n...[truncated]"
+            proposal_text = (
+                f"Proposed update to email-preferences.md\n\n"
+                f"Reason: {proposed_email_prefs['reason']}\n\n"
                 f"---\n{preview}\n---\n\n"
                 f"Reply 'approve' to save or 'reject' to discard."
             )
@@ -346,6 +414,12 @@ def _write_charlie_doc(content: str):
     charlie_doc = Path(__file__).parent.parent / "charlie.md"
     charlie_doc.write_text(content)
     log.info("charlie.md updated")
+
+
+def _write_email_prefs_doc(content: str):
+    prefs_doc = Path(__file__).parent.parent / "email-preferences.md"
+    prefs_doc.write_text(content)
+    log.info("email-preferences.md updated")
 
 
 async def on_topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE):
