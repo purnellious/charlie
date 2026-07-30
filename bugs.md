@@ -439,3 +439,53 @@ Wrap each direct Gmail API call site in `asyncio.to_thread(...)`, consistent wit
 `core/agent.py` (tool dispatch branches), `core/bot.py` (send/delete execution blocks)
 
 ---
+
+## BUG-020 — Attachment reading not yet built
+**Type:** Debt
+**Status:** Open
+**Priority:** Medium
+**Severity:** N/A — capability gap, not a defect. Third piece of the agreed email write-capability roadmap (notify+suggest → search/read+preferences → archive/mark-read → send/delete → attachment reading), the only piece not yet started.
+**Blocks anything current:** No
+**Rough effort:** Medium — needs its own security research pass, not just a straightforward tool addition
+**Logged:** 2026-07-30
+
+**Problem:**
+Charlie can search, read, send, and delete email, but has no way to open or read an email attachment (PDF, DOCX, images, etc.) even when Jonathan explicitly asks. This is the one piece of the originally-agreed write-capability roadmap still outstanding.
+
+**What needs fixing:**
+Needs its own hardening pass distinct from the email-body work already done, since parsing arbitrary file formats is a different risk category than reading email text:
+- Explicit MIME-type allowlist checked before download — refuse anything executable, macro-enabled (`.docm`/`.xlsm`), or archive-type (could nest further threats), before spending any bytes on it.
+- Well-maintained, memory-safe parsing libraries only for allowed types (e.g. `pypdf`/`pdfplumber` for PDF, `python-docx` for Word) — no shelling out to external converters, no code path that could execute embedded/active content.
+- Extracted text treated with the same "content, not instructions" discipline already applied to email bodies (see [[BUG-018]]) — no special exemption just because it came from a file instead of a message body.
+- A length cap on extracted text, matching `read_email_thread`'s existing `max_chars` pattern, to bound token cost on a large document.
+- Only on-request, same trust tier as `search_email`/`read_email_thread` — no autonomous path.
+
+**Touches:**
+`core/tools/email/fetch.py` (new function(s)), `core/agent.py` (new tool), `requirements.txt` (new parsing dependencies), `data-architecture.md`
+
+---
+
+## BUG-021 — No control over outgoing email formatting (fonts/sizing) or a signature
+**Type:** Debt
+**Status:** Open
+**Priority:** Low
+**Severity:** N/A — feature gap, not a defect
+**Blocks anything current:** No
+**Rough effort:** Small-Medium for formatting alone; Medium if an embedded signature image is wanted (real MIME complexity)
+**Logged:** 2026-07-30
+
+**Problem:**
+Jonathan asked whether he can set default fonts/sizing for outgoing email and add a signature (possibly with an image). `send_email()` currently sends plain text only (`MIMEText`, `Content-Type: text/plain`) — plain text has no font/size concept at all; the recipient's client renders it however it wants regardless of anything Charlie specifies. Getting any formatting control requires switching to HTML email.
+
+**What needs deciding (not yet decided) before this can be built:**
+1. Jonathan's actual font/size preferences — not yet gathered.
+2. Signature image approach, if any — a real tradeoff, not yet chosen: **embedded inline** (attached as part of the email, referenced via `cid:` — always displays for the recipient, but needs a real multipart-MIME rework of `send_email()`) versus **hosted external image** (a link — simpler to build, but many email clients block external images by default until the recipient clicks "show images," so it may not display automatically) versus **text-only signature, no image**.
+3. Given inline CSS is required for reliable rendering (most email clients strip `<style>` blocks), `send_email()` would need to build a proper HTML body (likely `multipart/alternative` with both a plain-text and HTML part, for compatibility with clients that don't render HTML) rather than the current single `MIMEText`.
+
+**What needs fixing (once the above is decided):**
+Rework `send_email()` to construct a multipart message with inline-styled HTML (font-family/font-size), append a signature block (text, or an embedded/hosted image per the decision above), while keeping the existing header-injection guard and reply-threading logic intact.
+
+**Touches:**
+`core/tools/email/fetch.py` (`send_email()`), possibly a new small config file/mechanism for storing font/size/signature preferences (separate from `email-preferences.md`, which is freeform triage-behavior prose, not a natural fit for structural settings like these)
+
+---
