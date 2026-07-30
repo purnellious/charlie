@@ -258,3 +258,30 @@ def get_thread_content(thread_id: str, max_chars: int = 8000) -> str:
     if len(combined) > max_chars:
         combined = combined[:max_chars] + "\n\n[truncated]"
     return combined
+
+
+def archive_thread(thread_id: str) -> None:
+    """Remove the INBOX label from every message in the thread — matches Gmail's own
+    Archive button behaviour. Reversible (the thread still exists, just not in Inbox)."""
+    service = _build_service()
+    service.users().threads().modify(
+        userId="me", id=thread_id, body={"removeLabelIds": ["INBOX"]}
+    ).execute()
+
+
+def mark_thread_read(thread_id: str) -> None:
+    """Remove UNREAD from every message in the thread."""
+    service = _build_service()
+    service.users().threads().modify(
+        userId="me", id=thread_id, body={"removeLabelIds": ["UNREAD"]}
+    ).execute()
+
+
+def mark_thread_unread(thread_id: str) -> None:
+    """Add UNREAD to every message in the thread — not just the most recent one, which is
+    a deliberate simplification (matching archive_thread/mark_thread_read's thread-wide
+    scope) rather than Gmail's own UI convention of flagging only the latest message."""
+    service = _build_service()
+    service.users().threads().modify(
+        userId="me", id=thread_id, body={"addLabelIds": ["UNREAD"]}
+    ).execute()

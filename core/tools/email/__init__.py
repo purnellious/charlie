@@ -1,7 +1,8 @@
 """
 Email monitor tool — polls Jonathan's inbox, triages each new message with
-Claude Haiku, and pushes one batched Telegram digest per poll. Read-only
-(gmail.readonly) — no send, reply, forward, or delete capability exists
+Claude Haiku, and pushes one batched Telegram digest per poll. gmail.modify
+scope — supports archive/mark-read/mark-unread (on-request only, no
+autonomous use). No send, reply, forward, or delete capability exists
 anywhere in this tool.
 """
 import asyncio
@@ -33,7 +34,8 @@ def _format_digest(rows: list) -> str:
         else:
             action_line = f"No action needed: {r['summary']}"
         lines.append(
-            f"From: {r['sender_name']} <{r['sender_email']}> — {r['subject']} [#{r['id']}]\n"
+            f"From: {r['sender_name']} <{r['sender_email']}> — {r['subject']} "
+            f"[#{r['id']}, thread={r['thread_id']}]\n"
             f"  {action_line}\n"
         )
     return "\n".join(lines).strip()

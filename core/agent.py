@@ -263,6 +263,50 @@ TOOLS = [
         },
     },
     {
+        "name": "archive_email",
+        "description": (
+            "Archive an email thread — removes it from the Inbox (reversible, the thread "
+            "still exists and remains searchable). Use only when Jonathan explicitly asks "
+            "you to archive something. Get thread_id from a search_email result or an "
+            "Email topic digest line."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "thread_id": {"type": "string", "description": "Gmail thread_id to archive."},
+            },
+            "required": ["thread_id"],
+        },
+    },
+    {
+        "name": "mark_email_read",
+        "description": (
+            "Mark an email thread as read. Use only when Jonathan explicitly asks. Get "
+            "thread_id from a search_email result or an Email topic digest line."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "thread_id": {"type": "string", "description": "Gmail thread_id to mark read."},
+            },
+            "required": ["thread_id"],
+        },
+    },
+    {
+        "name": "mark_email_unread",
+        "description": (
+            "Mark an email thread as unread. Use only when Jonathan explicitly asks. Get "
+            "thread_id from a search_email result or an Email topic digest line."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "thread_id": {"type": "string", "description": "Gmail thread_id to mark unread."},
+            },
+            "required": ["thread_id"],
+        },
+    },
+    {
         "name": "propose_email_prefs_update",
         "description": (
             "Propose an update to email-preferences.md — your persistent understanding of how "
@@ -400,6 +444,9 @@ to determine which members are relevant, confirm with Jonathan, then call this t
 this whenever he asks about a specific email, sender, or topic in his inbox
 - **read_email_thread** — fetch the full content of an email thread by thread_id (from a \
 search_email result or an Email topic digest); use when he wants the actual content, not just a summary
+- **archive_email** / **mark_email_read** / **mark_email_unread** — act on an email thread by \
+thread_id, only when Jonathan explicitly asks. Self-mailbox actions only — never send, reply, \
+forward, or delete anything (no such capability exists)
 - **propose_email_prefs_update** — propose an update to your persistent understanding of how \
 Jonathan wants email handled (email-preferences.md). He will review before it's saved.
 
@@ -750,6 +797,33 @@ async def handle_turn(
                 tool_results.append(tr)
                 if has_content:
                     raw_content_results.append(tr)
+
+            elif block.name == "archive_email":
+                from core.tools.email.fetch import archive_thread
+                try:
+                    archive_thread(block.input.get("thread_id", ""))
+                    result = "Archived."
+                except Exception as e:
+                    result = f"Could not archive: {e}"
+                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
+
+            elif block.name == "mark_email_read":
+                from core.tools.email.fetch import mark_thread_read
+                try:
+                    mark_thread_read(block.input.get("thread_id", ""))
+                    result = "Marked as read."
+                except Exception as e:
+                    result = f"Could not mark as read: {e}"
+                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
+
+            elif block.name == "mark_email_unread":
+                from core.tools.email.fetch import mark_thread_unread
+                try:
+                    mark_thread_unread(block.input.get("thread_id", ""))
+                    result = "Marked as unread."
+                except Exception as e:
+                    result = f"Could not mark as unread: {e}"
+                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
 
             else:
                 tool_results.append({

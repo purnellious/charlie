@@ -1,7 +1,15 @@
 """
 Gmail OAuth2 authentication for the email monitor tool.
-Read-only access only (gmail.readonly scope) — no send, modify, or delete
-capability exists anywhere in this module.
+
+Scope is gmail.modify — required for archive/mark-read/mark-unread (no
+narrower Gmail scope supports label changes on messages; gmail.labels only
+manages label *definitions*, not applying them). This scope also technically
+permits sending mail and reversible-trashing messages, even though no such
+tool exists in this codebase yet — the boundary is the code, not the
+credential. Permanent deletion requires the separate, full
+https://mail.google.com/ scope, which must never be requested for this
+integration (see data-architecture.md) — that's what keeps permanent
+deletion architecturally impossible, not just discouraged.
 
 One-time setup (run manually from a terminal — never called by the running
 bot process, since it needs an interactive browser sign-in):
@@ -18,7 +26,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 ACCOUNT_EMAIL = "jonathan@ts.org"
 CREDENTIALS_PATH = Path(__file__).parent / "credentials.json"
 TOKENS_DIR = Path(__file__).parent / "tokens"
