@@ -203,6 +203,32 @@ async def _run_retention_sweep(app: Application):
         log.error(f"Retention sweep failed: {e}")
 
 
+async def _run_larica_briefing(app: Application):
+    """
+    Fetch news, summarise with Sonnet, and email Larica's daily briefing.
+    Silent — no Telegram notification.
+    """
+    import asyncio
+    try:
+        from core.tools.larica_news import run_larica_pipeline
+
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, lambda: run_larica_pipeline(dry_run=False))
+
+        if result["email_sent"]:
+            log.info(
+                f"Larica briefing complete: "
+                f"{sum(len(s['stories']) for s in result['sections'])} stories across "
+                f"{len(result['sections'])} sections"
+            )
+        else:
+            log.error("Larica briefing: pipeline ran but email send failed")
+        if result["errors"]:
+            log.warning(f"Larica briefing feed errors: {result['errors']}")
+    except Exception as e:
+        log.error(f"Larica briefing failed: {e}")
+
+
 async def setup_scheduler(app: Application):
     group_id = os.getenv("TELEGRAM_GROUP_ID", "").strip()
     if not group_id:
@@ -264,6 +290,16 @@ async def setup_scheduler(app: Application):
         minute=0,
         args=[app],
     )
+    scheduler.add_job(
+        _run_larica_briefing,
+        trigger="cron",
+        hour=8,
+        minute=0,
+        timezone="America/New_York",
+        id="larica_morning_briefing",
+        replace_existing=True,
+        args=[app],
+    )
     scheduler.start()
 
     log.info(f"Morning briefing scheduled for {briefing_time} ({timezone}) daily.")
@@ -272,6 +308,7 @@ async def setup_scheduler(app: Application):
     log.info(f"Bug topic reconciliation scheduled for 03:00 ({timezone}) daily.")
     log.info(f"Grant finder pipeline scheduled for Monday 08:00 ({timezone}) weekly.")
     log.info(f"Retention sweep scheduled for 04:00 ({timezone}) daily.")
+    log.info("Larica morning briefing scheduled for 08:00 America/New_York daily.")
     app.bot_data["scheduler"] = scheduler
 
 

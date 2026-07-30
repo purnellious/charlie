@@ -43,8 +43,10 @@ The only authorised external data transmission is:
   - News module: article headlines and summaries (from public RSS feeds) are sent to Haiku for briefing summarisation. No personal data is included.
   - Grants module: scraped grant listing text (from public web pages) is sent to Haiku for L3 verification and categorisation. Gmail email bodies are sent to Haiku for grant extraction — raw email content is processed in memory only and never written to disk or DB. Only extracted opportunity metadata (title, URL, deadline) is persisted.
   - Council tool: the idea text and any context Jonathan provides is sent in parallel to multiple Sonnet instances (one per council member, two rounds, plus synthesis). Jonathan must explicitly invoke the council, so this is approved per-use.
+  - Larica news module: article titles and descriptions (from public RSS feeds) are sent to Sonnet for selection and summarisation. No personal data is included. Same pattern as the news module above.
 - **Telegram API** — messages sent/received via the bot. Approved.
 - **RSS feeds (outbound fetch)** — `core/tools/news.py` fetches configured public RSS feeds via feedparser. No personal data is sent; these are read-only HTTP requests to public URLs. Sources are managed via the news_add_source / news_remove_source tools.
+- **Larica news email (outbound)** — `core/tools/larica_news.py` fetches public RSS feeds daily, sends summaries to Sonnet, and emails the result to laricalschnell@gmail.com via Gmail SMTP. No personal data beyond the curated article summaries is included. Recipient approved by Jonathan.
 
 No other third-party service receives Charlie data without Jonathan's explicit per-integration sign-off.
 
