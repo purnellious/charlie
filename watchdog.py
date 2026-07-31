@@ -38,6 +38,7 @@ HEARTBEAT_PATH = os.path.join(SCRIPT_DIR, "data", "heartbeat.txt")
 STATE_PATH = os.path.join(SCRIPT_DIR, "data", "watchdog_state.json")
 
 HEARTBEAT_MAX_AGE_SECONDS = 10 * 60  # generous buffer over the 3-min write interval
+STARTUP_GRACE_SECONDS = 6 * 60  # covers at least one heartbeat cycle after a fresh (re)start
 MAX_ALERTS_PER_OUTAGE = 10
 LABEL = "com.charlie"
 
@@ -83,15 +84,41 @@ def _send_alert(token, group_id, text):
         print(f"watchdog: alert send failed: {e}")
 
 
-def _is_process_running():
+def _process_status():
+    """
+    Returns (running: bool, pid: str|None). PID comes straight out of
+    `launchctl list`'s own text output rather than a second lookup, since
+    that's the exact process instance being asked about.
+    """
     try:
         result = subprocess.run(
             ["launchctl", "list", LABEL],
             capture_output=True, text=True, timeout=10,
         )
-        return result.returncode == 0
+        if result.returncode != 0:
+            return False, None
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.startswith('"PID"'):
+                pid = line.split("=")[1].strip().rstrip(";").strip()
+                return True, pid
+        return True, None
     except Exception:
-        return False
+        return False, None
+
+
+def _process_uptime_seconds(pid):
+    """Seconds since the process at `pid` started, via `ps -o etimes=`. None if unavailable."""
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "etimes=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        return int(result.stdout.strip())
+    except Exception:
+        return None
 
 
 def _heartbeat_age_seconds():
@@ -134,10 +161,19 @@ def main():
     token = env.get("TELEGRAM_BOT_TOKEN")
     group_id = env.get("TELEGRAM_GROUP_ID")
 
-    process_running = _is_process_running()
+    process_running, pid = _process_status()
+    uptime = _process_uptime_seconds(pid) if pid else None
+    in_startup_grace = uptime is not None and uptime < STARTUP_GRACE_SECONDS
+
     heartbeat_age = _heartbeat_age_seconds()
     heartbeat_fresh = heartbeat_age is not None and heartbeat_age < HEARTBEAT_MAX_AGE_SECONDS
-    healthy = process_running and heartbeat_fresh
+    # Right after com.charlie (re)starts, no heartbeat has been written yet —
+    # the job only fires every 3 minutes. Without a grace period, the watchdog
+    # (which also runs at its own boot, ~90s after a fresh start in practice)
+    # would treat that gap as a genuine outage and false-alarm/restart on
+    # every single restart. Only the process-running check applies during
+    # the grace window; heartbeat freshness is enforced once it elapses.
+    healthy = process_running and (heartbeat_fresh or in_startup_grace)
 
     state = _load_state()
 
