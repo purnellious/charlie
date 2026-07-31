@@ -49,3 +49,34 @@ via /distil when closing a topic. Loaded into Charlie's system prompt alongside 
 - Handover plan remains on the list but no realistic near-term trigger
 
 ---
+
+**Email drafting preferences established — 30 July 2026**
+
+- No comma after greeting line (e.g. "Hi Jared" not "Hi Jared,")
+- No em dashes or other AI drafting hallmarks; write plainly and humanly
+- Always sign off: "Kind regards," new line "Jonathan"
+- These rules apply to all future email drafts
+
+**Jared Silver / watch sale — 30 July 2026**
+
+- Ongoing sale of two watches via Stephen Silver Fine Jewelry (Jared Silver, President)
+- Jared needs box and papers for both watches before finalising sales; waiting on MB&F service quote
+- Jonathan replied 30 July confirming Riccardo is arranging boxes/papers and asking to be kept in loop on the MB&F quote
+
+**Z3 Consultants inspection — 30 July 2026**
+
+- Z3 Consultants performs recurring backflow certification inspections at 250 Maloney Road 21794
+- Most recent inspection report: 3 June 2026 (PDF attachment: "250 Maloney Road 21794 F"), sent via QuickBooks
+
+---
+
+**Charlie email integration build-out — 30 Jul 2026**
+- Email monitor (polling `jonathan@ts.org` every 2 minutes, Haiku triage, batched digests to 📧 Email topic) was already live; Jonathan extended it significantly on this day (search, read, archive, mark read/unread, send, delete)
+- A couple of remaining bugs outstanding — Jonathan plans to address them soon, no urgency
+
+**Ongoing situation context — 30 Jul 2026**
+- Jonathan is anxious about the future; aggressively job hunting while keeping Human Agency as one thread (no CEO response yet, follow-up sent)
+- TS Group July salary still unpaid
+- Moar Labs $50k investment unblocked (both accounts now open)
+
+---
