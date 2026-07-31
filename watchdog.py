@@ -108,15 +108,28 @@ def _process_status():
 
 
 def _process_uptime_seconds(pid):
-    """Seconds since the process at `pid` started, via `ps -o etimes=`. None if unavailable."""
+    """
+    Seconds since the process at `pid` started. macOS's BSD `ps` has no
+    `etimes` (seconds) keyword — that's GNU/Linux-only — so this parses the
+    portable `etime` format instead: "[[dd-]hh:]mm:ss". None if unavailable.
+    """
     try:
         result = subprocess.run(
-            ["ps", "-o", "etimes=", "-p", str(pid)],
+            ["ps", "-o", "etime=", "-p", str(pid)],
             capture_output=True, text=True, timeout=10,
         )
         if result.returncode != 0:
             return None
-        return int(result.stdout.strip())
+        raw = result.stdout.strip()
+        days = 0
+        if "-" in raw:
+            days_str, raw = raw.split("-", 1)
+            days = int(days_str)
+        parts = [int(p) for p in raw.split(":")]
+        while len(parts) < 3:
+            parts.insert(0, 0)
+        hours, minutes, seconds = parts
+        return days * 86400 + hours * 3600 + minutes * 60 + seconds
     except Exception:
         return None
 
