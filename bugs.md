@@ -358,12 +358,13 @@ Where should this actually get read? Options worth weighing, not yet decided: (1
 
 ## BUG-016 — Telegram topic-existence check duplicated instead of shared
 **Type:** Debt
-**Status:** Open
+**Status:** Closed
 **Priority:** Low
 **Severity:** Low — cosmetic duplication, not a functional bug
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-07-30
+**Resolved:** 2026-07-31 — closed as moot rather than built. While fixing [[BUG-017]] for both tools, the two mechanisms ended up diverging for good structural reasons, not just accidental duplication: the email tool no longer probes existence at all — it self-heals reactively on an actual failed send, since it has a regular 2-minute poll cadence to hook into. Bug topics have no equivalent regular send channel, so a proactive nightly probe (now via `edit_forum_topic`, see BUG-017) is still the right shape there. A shared helper would now have to abstract over two genuinely different strategies, not just one duplicated technique — not worth building for that.
 
 **Problem:**
 `core/tools/bugs.py`'s `_topic_exists()` (probes via `unpin_all_forum_topic_messages`, treats a "thread" `BadRequest` as deletion, fails safe on anything unexpected) is the only existing implementation of "does this Telegram forum topic still exist." The new email monitor tool (`core/tools/email/`) needs the same check for its own persistent Email topic, but importing `bugs.py`'s private helper would be a tool-calling-tool dependency (Principle 1, Hub-and-Spokes). Building the email tool's own build scope didn't include touching `bugs.py`, so the ~15-line technique was duplicated locally in `core/tools/email/__init__.py::reconcile_email_topic` instead.
@@ -378,14 +379,14 @@ Extract a shared `core/telegram_utils.py` (or similar) with a single `topic_exis
 
 ## BUG-017 — Topic-existence check can never actually detect a deleted topic (missing bot permission)
 **Type:** Bug
-**Status:** Closed (for email; bugs.py's identical reconciliation still has the same underlying issue — see note)
+**Status:** Closed (both email and bugs.py instances)
 **Priority:** Low
 **Severity:** Low — fails safe (assumes the topic still exists), so the worst case is a deleted topic doesn't get auto-recreated; no data loss or incorrect risky assumption
 **Blocks anything current:** No
 **Rough effort:** Small (Telegram admin settings change) to Medium (if a different probe technique is wanted instead)
 **Logged:** 2026-07-30
-**Resolved:** 2026-07-31 — the email topic no longer depends on this broken probe at all. `core/tools/email/__init__.py`'s `poll_and_notify`/`send_alert` now go through a new `_send_to_email_topic` helper that catches a `BadRequest` from an actually-deleted topic directly (on the real send call, not a separate permission-gated probe) and recreates it immediately, within one poll cycle (≤2 min) instead of waiting up to a day for a check that never worked. The daily `reconcile_email_topic` job and function have been removed entirely as redundant. This resolves the bug by making the broken check unnecessary rather than fixing it — closing this specific instance rather than pursuing (a)/(b) below for email.
-**Note:** `core/tools/bugs.py`'s own nightly 3am bug-topic reconciliation uses the identical `unpin_all_forum_topic_messages` probe technique and almost certainly hits the same permission wall — that instance was untouched by this fix and remains open. Not re-logged as a new bug since the underlying problem and fix options are unchanged from what's already documented below; whoever picks this up next should scope it to `bugs.py` only.
+**Resolved (email):** 2026-07-31 — the email topic no longer depends on this broken probe at all. `core/tools/email/__init__.py`'s `poll_and_notify`/`send_alert` now go through a new `_send_to_email_topic` helper that catches a `BadRequest` from an actually-deleted topic directly (on the real send call, not a separate permission-gated probe) and recreates it immediately, within one poll cycle (≤2 min) instead of waiting up to a day for a check that never worked. The daily `reconcile_email_topic` job and function have been removed entirely as redundant. This resolves the bug by making the broken check unnecessary rather than fixing it.
+**Resolved (bugs.py):** 2026-07-31 — found while investigating Jonathan's report that almost none of his 21 logged bugs had a live Telegram topic. `core/tools/bugs.py`'s `_topic_exists()` used the identical `unpin_all_forum_topic_messages` probe and hit the same permission wall, always falling into the fail-safe "assume exists" branch. Bug topics don't have a regular send cadence to hook a reactive self-heal into (unlike email's 2-minute poll), so this needed an actual working existence check rather than email's reactive approach. Replaced with `edit_forum_topic(name=<the bug's own current topic name>)` — verified live against both a real existing topic and a fake one before relying on it: Telegram returns a specific `Topic_not_modified` error when the topic exists and the name already matches (a true no-op, zero visible side effect) versus `Topic_id_invalid` when it's gone, cleanly distinguishing the two without needing the missing permission. (Tested and rejected passing no `name` at all — Telegram/python-telegram-bot treats a fully empty edit as a no-op *without* validating the topic_id, so it silently "succeeds" even against a nonexistent one.) A new shared `_topic_name_for(bug)` helper keeps topic creation and the existence check using the exact same name, so a normal check never accidentally triggers a real rename. See also [[BUG-022]], a distinct crash bug found in the same investigation that had separately been blocking reconciliation from ever reaching several bugs at all.
 
 **Problem:**
 Found while live-testing the new email monitor's `reconcile_email_topic` against the real, valid "📧 Email" topic: the probe (`unpin_all_forum_topic_messages`, the same technique `core/tools/bugs.py`'s `_topic_exists()` uses) fails with "Not enough rights to manage pinned messages in the chat" — a `BadRequest` that doesn't match the "thread"/"message_thread" pattern used to detect an actually-deleted topic, so it falls into the fail-safe "assume exists" branch every single time, regardless of whether the topic is real or gone. This means the check has likely never actually detected a deleted topic for either tool — including `bugs.py`'s existing nightly 3am reconciliation, which uses the identical technique and almost certainly hits the same permission wall.
@@ -491,5 +492,29 @@ Rework `send_email()` to construct a multipart message with inline-styled HTML (
 
 **Touches:**
 `core/tools/email/fetch.py` (`send_email()`), possibly a new small config file/mechanism for storing font/size/signature preferences (separate from `email-preferences.md`, which is freeform triage-behavior prose, not a natural fit for structural settings like these)
+
+---
+
+## BUG-022 — reconcile_bug_topics crashed nightly on a non-numeric Topic ID, silently blocking every later bug from getting a topic
+**Type:** Bug
+**Status:** Closed
+**Priority:** High
+**Severity:** High — silently broke bug-topic creation entirely for 2+ days with no visible error to Jonathan; found while investigating his report that "almost none" of 21 bugs have an open Telegram topic
+**Blocks anything current:** No (fixed same-session as found)
+**Rough effort:** Small
+**Logged:** 2026-07-31
+**Resolved:** 2026-07-31
+
+**Problem:**
+When BUG-014 was logged (2026-07-29) its `Topic ID` field was set to the literal string `N/A (raised in a Claude Code planning session, not a Telegram topic)` — a deliberate marker meaning "this bug wasn't raised via Telegram, so it has no topic," not "topic ID unknown." `core/tools/bugs.py`'s `reconcile_bug_topics()` treats any non-empty `topic_id` field as a real ID to verify and calls `int(raw_topic_id)` on it directly, uncaught. Confirmed via `charlie.log`: every nightly run since — 2026-07-30 03:00:01 and 2026-07-31 03:00:00 — crashed at that line with `invalid literal for int() with base 10: 'N/A (...)'`, caught only by the outer wrapper in `core/scheduler.py`'s `_reconcile_bug_topics` (which just logs the failure), meaning the function aborted every night partway through the bug list in file order — before ever reaching BUG-016, 018, 019, 020, or 021 (all Open, all logged after BUG-014, all with no topic_id at all). That's the real reason those 5 bugs never got a Telegram topic, distinct from (though compounding) [[BUG-017]].
+
+**Fix:** `reconcile_bug_topics()` now explicitly recognizes a `Topic ID` value starting with `N/A` as "deliberately topic-less" and skips it entirely (no create, no verify) — rather than either crashing on it or misinterpreting it as "missing, go create one." Also wrapped the remaining `int(raw_topic_id)` parse in a try/except so any future malformed value degrades to a per-bug warning-and-skip instead of aborting reconciliation for every bug still to come.
+
+**Verified:** Ran the fixed function locally against a mock bot and the real `bugs.md` — completed without crashing, correctly skipped BUG-014/015, correctly reached and attempted topic creation for BUG-016/018/019/020/021 (blocked only by `core/state` not being initialized outside the real bot process — a test-harness limitation, not a code issue), and correctly left already-existing topics (BUG-007/008/009/010, simulated as still live) untouched.
+
+**Found by code review, fixed same session:** `create_bug_topic()` used to create the real Telegram topic, send its opening message, and only *then* persist the topic_id to `bugs.md` — a transient failure sending that message would leave a live, orphaned Telegram topic with no record in `bugs.md`, and the next reconciliation run would see "no topic_id" and create a genuine duplicate. This was always possible in principle, but the old broken `_topic_exists` check almost never actually reached the "recreate" path (it fail-safed to "assume exists"), so it rarely mattered in practice — fixing BUG-017 for bugs.py makes that path fire for real for the first time, so this gap needed closing alongside it, not left for later. Fixed by moving `set_bug_topic_id()` to immediately after topic creation, before the opening-message send.
+
+**Touches:**
+`core/tools/bugs.py` (`reconcile_bug_topics`)
 
 ---

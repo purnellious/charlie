@@ -249,6 +249,12 @@ TBD
 # Telegram topic creation
 # ---------------------------------------------------------------------------
 
+def _topic_name_for(bug: dict) -> str:
+    """The canonical Telegram topic name for a bug — shared by creation and the
+    existence probe so they always agree on what name to expect/pass."""
+    return f"❗ {bug['bug_id']} — {bug['title']}"[:MAX_TOPIC_NAME]
+
+
 async def create_bug_topic(bug: dict) -> int:
     """
     Create a Telegram forum topic for a bug.
@@ -260,14 +266,20 @@ async def create_bug_topic(bug: dict) -> int:
     app = state.get_app()
     group_id = state.group_id
 
-    topic_name = f"❗ {bug['bug_id']} — {bug['title']}"
-    topic_name = topic_name[:MAX_TOPIC_NAME]
+    topic_name = _topic_name_for(bug)
 
     forum_topic = await app.bot.create_forum_topic(
         chat_id=group_id,
         name=topic_name,
     )
     thread_id = forum_topic.message_thread_id
+
+    # Persist the topic_id immediately, before the (fallible) opening message
+    # send — otherwise a transient failure here would leave a live, orphaned
+    # Telegram topic with no record in bugs.md, and the next reconciliation
+    # run would see "no topic_id" and create a genuine duplicate.
+    set_bug_topic_id(bug['bug_id'], thread_id)
+    log.info(f"Created topic {thread_id} for {bug['bug_id']}")
 
     # Opening message with bug summary
     problem_preview = bug.get('problem', '')
@@ -288,8 +300,6 @@ async def create_bug_topic(bug: dict) -> int:
     )
     save_message(thread_id, "assistant", opening)
 
-    set_bug_topic_id(bug['bug_id'], thread_id)
-    log.info(f"Created topic {thread_id} for {bug['bug_id']}")
     return thread_id
 
 
@@ -314,21 +324,38 @@ async def create_topics_for_all_open_bugs() -> list[str]:
 # Reconciliation
 # ---------------------------------------------------------------------------
 
-async def _topic_exists(bot, group_id: str, topic_id: int) -> bool:
-    """Return True if the Telegram forum topic still exists.
+async def _topic_exists(bot, group_id: str, topic_id: int, expected_name: str) -> bool:
+    """
+    Return True if the Telegram forum topic still exists.
 
-    Uses unpin_all_forum_topic_messages — idempotent (no visible effect if no pins),
-    but fails with a thread-related error if the topic has been deleted.
-    Fails safe: any unexpected error is treated as the topic existing, to avoid
-    false positives that would create duplicate topics.
+    Uses edit_forum_topic(name=expected_name) as the probe — Telegram validates
+    the topic_id regardless of whether the name actually changes, and returns a
+    specific, distinguishable error either way: "Topic_not_modified" when the
+    topic exists and the name already matches (a true no-op, zero visible
+    effect), or "Topic_id_invalid" when the topic has been deleted. Verified
+    directly against a real live topic and a fake one before relying on this.
+
+    This replaces the previous unpin_all_forum_topic_messages probe, which
+    requires a "manage pinned messages" permission the bot doesn't have, so it
+    always fell through to a fail-safe "assume exists" — meaning this check has
+    likely never actually detected a closed/deleted bug topic since this tool
+    was built (see BUG-017).
+
+    Note: passing NO name at all is not viable as a probe — Telegram (or
+    python-telegram-bot) treats a completely empty edit as a no-op WITHOUT
+    validating the topic_id, so it silently "succeeds" even against a
+    nonexistent topic_id (verified directly) — the name must be supplied,
+    even though it's expected to just confirm the current one.
     """
     from telegram.error import BadRequest
     try:
-        await bot.unpin_all_forum_topic_messages(chat_id=group_id, message_thread_id=topic_id)
-        return True
+        await bot.edit_forum_topic(chat_id=group_id, message_thread_id=topic_id, name=expected_name)
+        return True  # an actual rename succeeded — topic exists (its name had drifted from bugs.md)
     except BadRequest as e:
         err = str(e).lower()
-        if "thread" in err or "message_thread" in err:
+        if "not_modified" in err or "not modified" in err:
+            return True  # topic exists, name already matched — a true no-op
+        if "invalid" in err or "not found" in err or "thread" in err:
             return False  # topic is gone
         # Unexpected BadRequest (e.g. permissions) — assume exists to avoid duplicates
         log.warning(f"Unexpected error checking topic {topic_id}: {e}")
@@ -343,7 +370,18 @@ async def reconcile_bug_topics(bot, group_id: str) -> list[str]:
     Ensure every open bug has a live Telegram topic.
     - Bugs with no topic_id: create one.
     - Bugs with a stale topic_id (topic deleted): clear and recreate.
+    - Bugs with a non-numeric Topic ID (e.g. "N/A (raised in a Claude Code
+      planning session, not a Telegram topic)" — a deliberate marker, not a
+      missing value) are skipped entirely, not treated as missing.
     Returns list of bug IDs that had topics created or recreated.
+
+    A bug parsed here with a non-numeric topic_id used to crash this whole
+    function on int(raw_topic_id) — since the exception wasn't caught until
+    the caller (core/scheduler.py's _reconcile_bug_topics), it silently
+    aborted reconciliation for every bug still to come in file order, every
+    single night, from the day such a value was first logged (BUG-014,
+    2026-07-29) until this fix. That's the real reason newer bugs never got
+    their topics created, distinct from (though compounding) BUG-017.
     """
     bugs = parse_bugs()
     open_bugs = [b for b in bugs if b.get('status') == 'Open']
@@ -351,6 +389,9 @@ async def reconcile_bug_topics(bot, group_id: str) -> list[str]:
 
     for bug in open_bugs:
         raw_topic_id = bug.get('topic_id')
+
+        if raw_topic_id and raw_topic_id.strip().upper().startswith('N/A'):
+            continue  # deliberately topic-less — never create or check one
 
         if not raw_topic_id:
             # No topic at all — create one
@@ -362,9 +403,14 @@ async def reconcile_bug_topics(bot, group_id: str) -> list[str]:
                 log.error(f"Failed to create topic for {bug['bug_id']}: {e}")
             await asyncio.sleep(0.5)
         else:
+            try:
+                topic_id = int(raw_topic_id)
+            except ValueError:
+                log.warning(f"{bug['bug_id']} has a non-numeric Topic ID ({raw_topic_id!r}) — skipping")
+                continue
+
             # Has a topic_id — verify it still exists
-            topic_id = int(raw_topic_id)
-            if not await _topic_exists(bot, group_id, topic_id):
+            if not await _topic_exists(bot, group_id, topic_id, _topic_name_for(bug)):
                 log.warning(f"Topic {topic_id} for {bug['bug_id']} is gone — recreating")
                 clear_bug_topic_id(bug['bug_id'])
                 fresh_bug = get_bug_by_id(bug['bug_id'])
