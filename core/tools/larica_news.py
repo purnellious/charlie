@@ -54,6 +54,31 @@ _SECTIONS = [
         ],
     },
     {
+        "key": "movies",
+        "label": "🎬 Movies",
+        "count": 3,
+        "depth": "short",
+        "feeds": [
+            ("Variety Film", "https://variety.com/v/film/feed/"),
+            ("The Hollywood Reporter", "https://www.hollywoodreporter.com/feed/"),
+            ("RogerEbert.com", "https://www.rogerebert.com/feed"),
+            ("IndieWire", "https://www.indiewire.com/feed/"),
+            ("Collider", "https://collider.com/feed/"),
+        ],
+    },
+    {
+        "key": "food_travel",
+        "label": "🍽️ Food & Travel",
+        "count": 3,
+        "depth": "short",
+        "feeds": [
+            ("Condé Nast Traveler", "https://www.cntraveler.com/feed/rss"),
+            ("Bon Appétit", "https://www.bonappetit.com/feed/rss"),
+            ("Eater NY", "https://ny.eater.com/rss/index.xml"),
+            ("NYT Food", "https://rss.nytimes.com/services/xml/rss/nyt/DiningandWine.xml"),
+        ],
+    },
+    {
         "key": "nyc_local",
         "label": "NYC / Jersey City",
         "count": 3,
@@ -75,22 +100,12 @@ _SECTIONS = [
             ("Popular Mechanics", "https://www.popularmechanics.com/rss/all.xml/"),
         ],
     },
-    {
-        "key": "heartwarming",
-        "label": "Heartwarming / Interesting",
-        "count": 2,
-        "depth": "short",
-        "feeds": [
-            ("Good News Network", "https://www.goodnewsnetwork.org/feed/"),
-            ("Positive News", "https://www.positive.news/feed/"),
-        ],
-    },
 ]
 
 _SYSTEM_PROMPT = (
     "You are curating a daily news email for a woman living in Jersey City, NJ. "
-    "She is interested in art, entertainment, local NYC/NJ news, personal growth, "
-    "and positive stories. Write in a warm, clear, intelligent tone. "
+    "She is interested in art, entertainment, film, food, travel, local NYC/NJ news, "
+    "and personal growth. Write in a warm, clear, intelligent tone. "
     "Never fabricate details — only summarise what is in the provided articles."
 )
 
