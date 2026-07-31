@@ -271,6 +271,8 @@ There is no way to quickly check whether all Charlie components are running corr
 **What needs fixing:**
 Build a /health or /status command in Telegram that checks all critical components and reports their status: (1) Telegram bot — responsive, (2) APScheduler — running and jobs registered, (3) SQLite DB — accessible and readable, (4) Agent — can instantiate and reach Anthropic API, (5) Key files present — charlie.md, principles.md, context-archive.md, followups.md. Output should be a clear pass/fail per component with any error detail surfaced. Consider also adding an automated silent check on a daily or hourly schedule that alerts Jonathan if anything is down.
 
+**Partial progress (2026-07-31):** The "automated silent check that alerts Jonathan if anything is down" half of this is now partly covered by the new standalone `watchdog.py` + heartbeat mechanism (checks process liveness + a genuine functional heartbeat every 3 min, alerts and attempts one auto-restart on failure — see devlog). Left open because the on-demand `/health` command itself (components 2-5 above) still doesn't exist.
+
 **Touches:**
 TBD
 
@@ -376,12 +378,14 @@ Extract a shared `core/telegram_utils.py` (or similar) with a single `topic_exis
 
 ## BUG-017 — Topic-existence check can never actually detect a deleted topic (missing bot permission)
 **Type:** Bug
-**Status:** Open
+**Status:** Closed (for email; bugs.py's identical reconciliation still has the same underlying issue — see note)
 **Priority:** Low
 **Severity:** Low — fails safe (assumes the topic still exists), so the worst case is a deleted topic doesn't get auto-recreated; no data loss or incorrect risky assumption
 **Blocks anything current:** No
 **Rough effort:** Small (Telegram admin settings change) to Medium (if a different probe technique is wanted instead)
 **Logged:** 2026-07-30
+**Resolved:** 2026-07-31 — the email topic no longer depends on this broken probe at all. `core/tools/email/__init__.py`'s `poll_and_notify`/`send_alert` now go through a new `_send_to_email_topic` helper that catches a `BadRequest` from an actually-deleted topic directly (on the real send call, not a separate permission-gated probe) and recreates it immediately, within one poll cycle (≤2 min) instead of waiting up to a day for a check that never worked. The daily `reconcile_email_topic` job and function have been removed entirely as redundant. This resolves the bug by making the broken check unnecessary rather than fixing it — closing this specific instance rather than pursuing (a)/(b) below for email.
+**Note:** `core/tools/bugs.py`'s own nightly 3am bug-topic reconciliation uses the identical `unpin_all_forum_topic_messages` probe technique and almost certainly hits the same permission wall — that instance was untouched by this fix and remains open. Not re-logged as a new bug since the underlying problem and fix options are unchanged from what's already documented below; whoever picks this up next should scope it to `bugs.py` only.
 
 **Problem:**
 Found while live-testing the new email monitor's `reconcile_email_topic` against the real, valid "📧 Email" topic: the probe (`unpin_all_forum_topic_messages`, the same technique `core/tools/bugs.py`'s `_topic_exists()` uses) fails with "Not enough rights to manage pinned messages in the chat" — a `BadRequest` that doesn't match the "thread"/"message_thread" pattern used to detect an actually-deleted topic, so it falls into the fail-safe "assume exists" branch every single time, regardless of whether the topic is real or gone. This means the check has likely never actually detected a deleted topic for either tool — including `bugs.py`'s existing nightly 3am reconciliation, which uses the identical technique and almost certainly hits the same permission wall.

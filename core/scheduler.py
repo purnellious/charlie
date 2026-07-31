@@ -265,15 +265,22 @@ async def _poll_inbox_email(app: Application):
                 log.error(f"Email monitor failure alert itself failed: {alert_e}")
 
 
-async def _reconcile_email_topic(app: Application):
-    group_id = os.getenv("TELEGRAM_GROUP_ID", "").strip()
-    if not group_id:
-        return
+HEARTBEAT_FILE = os.path.join(os.path.dirname(__file__), "..", "data", "heartbeat.txt")
+
+
+async def _heartbeat(app: Application):
+    """
+    Writes a timestamp only after a genuinely successful Telegram API call —
+    unlike 'job executed successfully' in the log (which fires even when a
+    poll inside the job failed and was caught), this is a real functional-
+    health signal the standalone watchdog.py script can trust.
+    """
     try:
-        from core.tools.email import reconcile_email_topic
-        await reconcile_email_topic(app, group_id)
+        await app.bot.get_me()
+        with open(HEARTBEAT_FILE, "w") as f:
+            f.write(str(datetime.now().timestamp()))
     except Exception as e:
-        log.error(f"Email topic reconciliation failed: {e}")
+        log.warning(f"Heartbeat check failed: {e}")
 
 
 async def setup_scheduler(app: Application):
@@ -354,10 +361,9 @@ async def setup_scheduler(app: Application):
         args=[app],
     )
     scheduler.add_job(
-        _reconcile_email_topic,
-        trigger="cron",
-        hour=3,
-        minute=30,
+        _heartbeat,
+        trigger="interval",
+        minutes=3,
         args=[app],
     )
     scheduler.start()
@@ -370,7 +376,7 @@ async def setup_scheduler(app: Application):
     log.info(f"Retention sweep scheduled for 04:00 ({timezone}) daily.")
     log.info("Larica morning briefing scheduled for 08:00 America/New_York daily.")
     log.info("Email inbox poll scheduled every 2 minutes.")
-    log.info(f"Email topic reconciliation scheduled for 03:30 ({timezone}) daily.")
+    log.info("Heartbeat scheduled every 3 minutes.")
     app.bot_data["scheduler"] = scheduler
 
 

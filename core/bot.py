@@ -603,11 +603,58 @@ async def post_shutdown(app: Application):
     await teardown_scheduler(app)
 
 
+def _wait_for_network(max_wait_seconds=120, attempt_timeout=5):
+    """
+    Block until api.telegram.org actually resolves, before anything Telegram/
+    HTTP-related initializes. A process that starts while the network is
+    still settling post-reboot can end up with a persistently bad cached DNS
+    resolver state for its entire life, even after the network fully
+    recovers moments later — this caused a ~12.5 hour outage on 2026-07-30.
+    Each resolution attempt runs in a worker thread with its own bounded
+    timeout — socket.getaddrinfo() itself has no built-in timeout and can
+    hang indefinitely against an unresponsive (not just erroring) resolver,
+    which would otherwise defeat the max_wait_seconds budget entirely. Gives
+    up after max_wait_seconds and starts anyway, logging a warning —
+    python-telegram-bot's own retry loop takes over from there for anything
+    transient.
+    """
+    import socket
+    import threading
+    import time
+
+    def _resolve(result: dict):
+        try:
+            socket.getaddrinfo("api.telegram.org", 443)
+            result["ok"] = True
+        except socket.gaierror:
+            result["ok"] = False
+
+    start = time.time()
+    while time.time() - start < max_wait_seconds:
+        result = {}
+        # A fresh daemon thread per attempt — never reuse/join a worker across
+        # attempts. If getaddrinfo hangs (unresponsive resolver, not just an
+        # erroring one), that thread is simply abandoned: daemon=True means it
+        # won't block process exit, and starting a new thread next attempt
+        # (rather than queuing behind a pooled worker) means one hung attempt
+        # can't stall every attempt after it.
+        t = threading.Thread(target=_resolve, args=(result,), daemon=True)
+        t.start()
+        t.join(timeout=attempt_timeout)
+        if result.get("ok"):
+            return
+        if not t.is_alive():
+            time.sleep(2)
+    log.warning(f"Network still not resolving after {max_wait_seconds}s — starting anyway")
+
+
 def main():
     if not TOKEN:
         raise SystemExit("TELEGRAM_BOT_TOKEN is missing from .env")
     if not GROUP_ID:
         raise SystemExit("TELEGRAM_GROUP_ID is missing from .env")
+
+    _wait_for_network()
 
     init_db()
     log.info("Charlie is starting...")

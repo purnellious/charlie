@@ -56,6 +56,29 @@ async def _get_or_create_topic(app, group_id: str) -> int:
     return topic_id
 
 
+async def _send_to_email_topic(app, group_id: str, text: str) -> None:
+    """
+    Send to the persisted Email topic, self-healing if it's gone — either
+    deleted or closed (Jonathan has said he'll periodically close/delete this
+    topic; a closed topic gets a fresh replacement rather than being reopened,
+    since closing it is a deliberate "start fresh" action here, unlike bug
+    topics which get reopened because closing one is usually accidental).
+    Reacts within one poll cycle (<=2 min) instead of depending on a daily
+    reconciliation job.
+    """
+    topic_id = await _get_or_create_topic(app, group_id)
+    try:
+        await proactive_send(app, group_id, topic_id, text)
+    except BadRequest as e:
+        err = str(e).lower()
+        if "thread" not in err and "message_thread" not in err and "closed" not in err:
+            raise
+        log.warning(f"Email topic {topic_id} is gone or closed — recreating and retrying")
+        db.set_email_topic_id(None)
+        topic_id = await _get_or_create_topic(app, group_id)
+        await proactive_send(app, group_id, topic_id, text)
+
+
 def _poll_sync() -> int:
     """
     Synchronous fetch+triage+db-write pipeline, run inside asyncio.to_thread
@@ -104,11 +127,10 @@ async def poll_and_notify(app, group_id: str) -> None:
     if not unnotified:
         return
 
-    topic_id = await _get_or_create_topic(app, group_id)
     digest = _format_digest(unnotified)
     chunks = _chunks(digest)
     for i, chunk in enumerate(chunks):
-        await proactive_send(app, group_id, topic_id, chunk)
+        await _send_to_email_topic(app, group_id, chunk)
         if i < len(chunks) - 1:
             await asyncio.sleep(0.5)  # matches bugs.py's convention for rapid Telegram sends
 
@@ -118,30 +140,4 @@ async def poll_and_notify(app, group_id: str) -> None:
 
 async def send_alert(app, group_id: str, text: str) -> None:
     """Used by the scheduler's consecutive-failure alert — ensures the topic exists first."""
-    topic_id = await _get_or_create_topic(app, group_id)
-    await proactive_send(app, group_id, topic_id, text)
-
-
-async def reconcile_email_topic(app, group_id: str) -> None:
-    """
-    Daily check that the persisted Email topic still exists in Telegram.
-    Duplicates the probe technique used elsewhere in this codebase
-    (unpin_all_forum_topic_messages as an existence check, fail-safe on
-    anything unexpected) as a small local helper rather than importing
-    another tool's private internals.
-    """
-    db.init_db()
-    topic_id = db.get_email_topic_id()
-    if not topic_id:
-        return
-    try:
-        await app.bot.unpin_all_forum_topic_messages(chat_id=group_id, message_thread_id=topic_id)
-    except BadRequest as e:
-        err = str(e).lower()
-        if "thread" in err or "message_thread" in err:
-            log.warning(f"Email topic {topic_id} is gone — clearing so it's recreated on next poll")
-            db.set_email_topic_id(None)
-        else:
-            log.warning(f"Unexpected error checking Email topic {topic_id}: {e}")
-    except Exception as e:
-        log.warning(f"Could not verify Email topic {topic_id}: {e}")
+    await _send_to_email_topic(app, group_id, text)
