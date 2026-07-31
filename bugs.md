@@ -455,6 +455,7 @@ Wrap each direct Gmail API call site in `asyncio.to_thread(...)`, consistent wit
 **Blocks anything current:** No
 **Rough effort:** Medium — needs its own security research pass, not just a straightforward tool addition
 **Logged:** 2026-07-30
+**Topic ID:** 2300
 
 **Problem:**
 Charlie can search, read, send, and delete email, but has no way to open or read an email attachment (PDF, DOCX, images, etc.) even when Jonathan explicitly asks. This is the one piece of the originally-agreed write-capability roadmap still outstanding.
