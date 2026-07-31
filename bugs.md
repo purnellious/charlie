@@ -481,6 +481,7 @@ Needs its own hardening pass distinct from the email-body work already done, sin
 **Blocks anything current:** No
 **Rough effort:** Small-Medium for formatting alone; Medium if an embedded signature image is wanted (real MIME complexity)
 **Logged:** 2026-07-30
+**Topic ID:** 2303
 
 **Problem:**
 Jonathan asked whether he can set default fonts/sizing for outgoing email and add a signature (possibly with an image). `send_email()` currently sends plain text only (`MIMEText`, `Content-Type: text/plain`) — plain text has no font/size concept at all; the recipient's client renders it however it wants regardless of anything Charlie specifies. Getting any formatting control requires switching to HTML email.
