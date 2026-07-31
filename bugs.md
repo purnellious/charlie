@@ -434,6 +434,7 @@ The real mitigation is structural, not verbal: consequential actions must requir
 **Blocks anything current:** No
 **Rough effort:** Small-Medium (wrap each call site in `asyncio.to_thread`, matching the pattern `core/tools/email/__init__.py::poll_and_notify` already uses for the background poller)
 **Logged:** 2026-07-30
+**Topic ID:** 2297
 
 **Problem:**
 `search_email`, `read_email_thread`, `archive_email`, `mark_email_read`, `mark_email_unread` (all dispatched inside `handle_turn()`'s tool loop) and now the send/delete execution in `bot.py`'s `on_message()` all call synchronous `googleapiclient` methods directly from async functions, with no `asyncio.to_thread`/executor wrapping — unlike the background poller (`poll_and_notify`), which deliberately wraps its sync Gmail+Haiku pipeline this way specifically to avoid blocking the bot's event loop. Every Gmail-calling tool in the interactive conversation path currently blocks the whole bot (all topics, not just the one making the call) for the duration of that HTTP round-trip.
