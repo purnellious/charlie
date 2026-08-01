@@ -712,3 +712,23 @@ Every `/code-review`/`/security-review` pass this session has checked that a gat
 TBD — likely a new small test-harness script/doc, plus a cadence note added to `principles.md` or `data-architecture.md`.
 
 ---
+
+## BUG-029 — read_email_thread fails to surface most recent messages in a thread
+**Type:** Bug
+**Status:** Open
+**Priority:** High
+**Severity:** High — causes Charlie to act on stale email content and misreport thread state to Jonathan
+**Blocks anything current:** No
+**Rough effort:** Medium
+**Logged:** 2026-08-01
+
+**Problem:**
+read_email_thread consistently fails to return the most recent message(s) in a thread. Observed twice in the same conversation with thread 19ed5cca3178e967: (1) after a new email arrived today about mice/permit, read_email_thread still reported the June 17 message as the latest; (2) after Erika replied to Jonathan's thank you mentioning humidity and buckling floors, read_email_thread again failed to surface that message. Charlie drafted and reasoned based on stale content as a result.
+
+**What needs fixing:**
+Investigate how get_thread_content() fetches and orders messages — likely either not fetching all pages of a long thread, not sorting by internalDate correctly (BUG-024 previously added sorting, but may not be working correctly), or caching stale content. Verify against the real thread 19ed5cca3178e967 which has known recent messages.
+
+**Touches:**
+TBD
+
+---
