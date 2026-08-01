@@ -619,6 +619,7 @@ TBD
 **Blocks anything current:** No
 **Rough effort:** Medium
 **Logged:** 2026-08-01
+**Topic ID:** 2448
 
 **Problem:**
 propose_forward_email forwards only the most recent message in a thread. When multiple distinct emails share the same subject and get grouped into one thread (e.g. two separate Extra Space Storage receipts), there is no way to selectively forward an earlier message in the thread — it always picks the last one.
