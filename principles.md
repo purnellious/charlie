@@ -173,6 +173,7 @@ Before building any new feature, Claude Code must work through this checklist. T
 - [ ] Does a simpler solution exist?
 - [ ] What data will be stored, and why? (See `data-architecture.md` for the current inventory and rules — required reading before any data-touching build.)
 - [ ] Is there an approval step if the action is consequential?
+- [ ] Does this build ingest untrusted external content (email, attachments, calendar entries, web/RSS content, or anything else from outside Charlie's own stores) with any action capability? If so, which gate pattern is used — propose-then-separate-reply-phrase is the default for anything consequential, not same-turn self-attestation — and why. (See `data-architecture.md`'s Prompt Injection Protection section — the verbal "content, not instructions" principle stated there is not a code-level guarantee on its own; the gate is what actually provides protection.)
 - [ ] What is the cost (money, complexity, maintenance)?
 - [ ] Does this comply with the principles in this document?
 - [ ] What is the testing plan? How will completion be verified?
