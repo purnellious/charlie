@@ -522,3 +522,23 @@ When BUG-014 was logged (2026-07-29) its `Topic ID` field was set to the literal
 `core/tools/bugs.py` (`reconcile_bug_topics`)
 
 ---
+
+## BUG-023 — Charlie can't forward emails (no true forward capability)
+**Type:** Debt
+**Status:** Open
+**Priority:** Medium
+**Severity:** Medium — workaround is composing a new email, but attachments and original headers are lost
+**Blocks anything current:** No
+**Rough effort:** Medium
+**Logged:** 2026-07-31
+
+**Problem:**
+Charlie can only compose new emails. There's no way to forward an existing email with its original headers, inline content, and attachments preserved — which is the standard way Jonathan routes receipts and invoices to finance@ts.org.
+
+**What needs fixing:**
+Add a forward_email tool that uses the Gmail API to forward an existing thread/message to a specified address, preserving original headers and attachments. Needs the same propose-then-confirm gate as send_email.
+
+**Touches:**
+TBD
+
+---
