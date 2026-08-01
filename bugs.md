@@ -571,13 +571,14 @@ Add a forward_email tool that uses the Gmail API to forward an existing thread/m
 
 ## BUG-024 — read_email_thread not surfacing CC addresses
 **Type:** Bug
-**Status:** Open
+**Status:** Closed
 **Priority:** High
 **Severity:** High — Charlie is misreporting email recipients, leading to incorrect reply-all behaviour and potential missed recipients
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-07-31
 **Topic ID:** 2366
+**Resolved:** 2026-08-01
 
 **Problem:**
 When reading an email thread, Charlie is not correctly surfacing CC addresses from the email headers. Jonathan manually verified that laricalschnell@gmail.com was CC'd on thread 19fbb1018ab8cff5, but Charlie reported no CC addresses present.
@@ -585,20 +586,23 @@ When reading an email thread, Charlie is not correctly surfacing CC addresses fr
 **What needs fixing:**
 Investigate how read_email_thread parses and surfaces CC/To/BCC headers from the Gmail API response. Ensure all recipient fields are correctly extracted and reported to the agent so reply-all and recipient visibility work accurately.
 
+**Resolved:** 2026-08-01 — root cause confirmed directly: `get_thread_content()` (the function behind `read_email_thread`) only ever parsed `From`/`Subject` headers per message, never `To`/`Cc` — a pre-existing gap predating the BUG-023 reply/reply-all/forward build, not introduced by it (that build's own reply-all derivation uses a separate function, `get_thread_summary()`, which already fetched `To`/`Cc` correctly). Fixed by adding `To`/`Cc` lines per message (Cc line omitted when empty, to avoid clutter on the common no-CC case). Verified live against the exact thread Jonathan reported (19fbb1018ab8cff5) — `laricalschnell@gmail.com` now correctly appears in the Cc line — and against a real no-CC thread, confirming no stray empty Cc line appears there.
+
 **Touches:**
-TBD
+`core/tools/email/fetch.py` (`get_thread_content`)
 
 ---
 
 ## BUG-025 — Email send confirmation displays "Sent to None" instead of recipient addresses
 **Type:** Bug
-**Status:** Open
+**Status:** Closed
 **Priority:** Medium
 **Severity:** Medium — confusing and misleading, but email sends correctly; cosmetic issue in the confirmation message
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-07-31
 **Topic ID:** 2384
+**Resolved:** 2026-08-01
 
 **Problem:**
 After a successful email send, the confirmation message displayed "Sent to None" instead of the actual recipient addresses. The email itself sent correctly (verified in Sent folder). Observed on a reply-all send to purnelljonathan@gmail.com with laricalschnell@gmail.com CC'd.
@@ -606,8 +610,10 @@ After a successful email send, the confirmation message displayed "Sent to None"
 **What needs fixing:**
 Investigate the send confirmation message builder in bot.py — the recipient field is resolving to None instead of the actual To/CC addresses at confirmation time. Likely the resolved recipients aren't being passed through to the confirmation message correctly.
 
+**Resolved:** 2026-08-01 — confirmed root cause directly: `bot.py`'s "send it" handler built the confirmation text from `pending['to']`, the raw (often `None`) value from the original proposal, not what actually got resolved and sent — `None` whenever `to` was omitted for a reply/reply-all, since the real recipient is only derived inside `resolve_send_recipients()` at send time. A gap in the original BUG-023 review: the "critical fix" there confirmed cc/bcc/reply_all were passed *into* `send_email()` correctly, but never checked what the *confirmation message afterward* used. Fixed by having `send_email()` return its resolved `{"to", "subject", "cc", "bcc", "message_id"}` dict, and building the confirmation from that return value (also now shows Cc when present, not just To). Verified live: a real send returns the correct resolved dict, and simulating the exact reply-all case that used to render "Sent to None." now correctly renders the real resolved recipient and Cc list.
+
 **Touches:**
-TBD
+`core/tools/email/fetch.py` (`send_email` now returns resolved dict), `core/bot.py` (confirmation message uses the return value)
 
 ---
 

@@ -286,6 +286,11 @@ def get_thread_content(thread_id: str, max_chars: int = 8000) -> str:
     does NOT strip quoted content (unlike fetch_new_emails' triage-tuned extraction),
     since reading an old conversation's quoted history is usually the point. Truncated
     at max_chars to bound token cost on a runaway-long thread.
+
+    Surfaces To/Cc per message (not just From/Subject) — previously omitted entirely
+    (BUG-024), which meant Jonathan had no way to see who else was actually on a thread
+    (e.g. a Cc'd third party) before deciding how to respond, including whether a
+    reply-all was appropriate.
     """
     service = _build_service()
     thread = service.users().threads().get(userId="me", id=thread_id, format="full").execute()
@@ -300,6 +305,8 @@ def get_thread_content(thread_id: str, max_chars: int = 8000) -> str:
         sender_raw = headers.get("from", "")
         display_name, sender_email = _parse_sender(sender_raw)
         subject = headers.get("subject", "(no subject)")
+        to_header = headers.get("to", "")
+        cc_header = headers.get("cc", "")
 
         internal_date_ms = int(msg.get("internalDate", 0))
         received_at = datetime.fromtimestamp(
@@ -307,7 +314,13 @@ def get_thread_content(thread_id: str, max_chars: int = 8000) -> str:
         ).strftime("%Y-%m-%d %H:%M")
 
         body = _extract_body(payload).strip()
-        parts.append(f"[{received_at}] From: {display_name} <{sender_email}>\nSubject: {subject}\n\n{body}")
+        header_lines = [f"[{received_at}] From: {display_name} <{sender_email}>"]
+        if to_header:
+            header_lines.append(f"To: {to_header}")
+        if cc_header:
+            header_lines.append(f"Cc: {cc_header}")
+        header_lines.append(f"Subject: {subject}")
+        parts.append("\n".join(header_lines) + f"\n\n{body}")
 
     combined = "\n\n---\n\n".join(parts)
     if len(combined) > max_chars:
@@ -451,7 +464,7 @@ def resolve_send_recipients(
 def send_email(
     to: str | None = None, subject: str = "", body: str = "", thread_id: str | None = None,
     cc: str | None = None, bcc: str | None = None, reply_all: bool = False,
-) -> None:
+) -> dict:
     """
     Send an email via messages().send(). Recipients/subject/threading are resolved
     through resolve_send_recipients() — the same function bot.py's proposal-text builder
@@ -465,6 +478,11 @@ def send_email(
     address strings. If thread_id is given, threads the reply via In-Reply-To/References
     (matching Gmail's documented requirements) and prefixes the subject with "Re: "
     (unless already present).
+
+    Returns the resolved {"to", "subject", "cc", "bcc", "message_id"} dict — callers
+    building a post-send confirmation message must use this return value, not whatever
+    raw `to`/`cc`/`bcc` they originally passed in (which may be None/empty for a reply
+    or reply-all where the real recipient was auto-derived, not supplied) — see BUG-025.
     """
     from email.mime.text import MIMEText
 
@@ -489,6 +507,8 @@ def send_email(
 
     service = _build_service()
     service.users().messages().send(userId="me", body=body_dict).execute()
+
+    return resolved
 
 
 def get_forward_preview(thread_id: str) -> dict:

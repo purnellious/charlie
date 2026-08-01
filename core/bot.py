@@ -199,13 +199,21 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pending = PENDING_SEND_EMAIL.pop(topic_id)
             try:
                 from core.tools.email.fetch import send_email
-                send_email(
+                # Use the RESOLVED recipients send_email() actually sent to for the
+                # confirmation, not pending['to'] — that's the raw proposal value and
+                # is None for any reply/reply-all where 'to' was auto-derived rather
+                # than explicitly supplied (see BUG-025: this previously rendered as
+                # the literal string "Sent to None.").
+                resolved = send_email(
                     to=pending["to"], subject=pending["subject"],
                     body=pending["body"], thread_id=pending["thread_id"],
                     cc=pending.get("cc"), bcc=pending.get("bcc"),
                     reply_all=pending.get("reply_all", False),
                 )
-                await send_and_save(context.bot, topic_id, f"Sent to {pending['to']}." + _other_pending_note(topic_id, "send_email"))
+                confirmation = f"Sent to {resolved['to']}."
+                if resolved.get("cc"):
+                    confirmation += f" Cc: {resolved['cc']}."
+                await send_and_save(context.bot, topic_id, confirmation + _other_pending_note(topic_id, "send_email"))
             except Exception as e:
                 log.error(f"Send failed for topic {topic_id}: {e}")
                 await send_and_save(context.bot, topic_id, f"Send failed: {e}" + _other_pending_note(topic_id, "send_email"))
