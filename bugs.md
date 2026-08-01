@@ -610,3 +610,23 @@ Investigate the send confirmation message builder in bot.py — the recipient fi
 TBD
 
 ---
+
+## BUG-026 — Forward tool can only forward the most recent message in a thread
+**Type:** Bug
+**Status:** Open
+**Priority:** Medium
+**Severity:** Medium — causes silent data loss when multiple emails are grouped in the same thread and only the most recent is forwarded
+**Blocks anything current:** No
+**Rough effort:** Medium
+**Logged:** 2026-08-01
+
+**Problem:**
+propose_forward_email forwards only the most recent message in a thread. When multiple distinct emails share the same subject and get grouped into one thread (e.g. two separate Extra Space Storage receipts), there is no way to selectively forward an earlier message in the thread — it always picks the last one.
+
+**What needs fixing:**
+Add the ability to specify a particular message within a thread to forward, rather than always defaulting to the most recent. Could be done by exposing a message_id parameter, or by surfacing individual messages in the thread for selection.
+
+**Touches:**
+TBD
+
+---
