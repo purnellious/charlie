@@ -5,10 +5,12 @@ returned for in-memory triage only — callers must never persist the
 'body' field to disk (see data-architecture.md).
 """
 import base64
+import html
 import logging
 import re
 from datetime import datetime, timezone, timedelta
 from email.utils import parseaddr, getaddresses, formataddr
+from html.parser import HTMLParser
 
 from googleapiclient.discovery import build
 
@@ -85,16 +87,19 @@ def _reject_control_chars(label: str, value: str) -> None:
         raise ValueError(f"Refusing to send: '{label}' contains a control character.")
 
 
-def _strip_html(html: str) -> str:
-    html = re.sub(r"<(script|style)[^>]*>.*?</(script|style)>", "", html,
+def _strip_html(raw_html: str) -> str:
+    # Named raw_html, not html — the module now does `import html` (for html.escape,
+    # used by forward_email) and a same-named local parameter here would shadow it,
+    # a latent trap for any future edit inside this function (caught in code review).
+    text = re.sub(r"<(script|style)[^>]*>.*?</(script|style)>", "", raw_html,
                   flags=re.DOTALL | re.IGNORECASE)
-    html = re.sub(r"<(br|p|div|tr|li)[^>]*/?>", "\n", html, flags=re.IGNORECASE)
-    html = re.sub(r"<[^>]+>", "", html)
+    text = re.sub(r"<(br|p|div|tr|li)[^>]*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
     for entity, char in [("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"),
                          ("&gt;", ">"), ("&quot;", '"'), ("&#39;", "'")]:
-        html = html.replace(entity, char)
-    html = re.sub(r"\n{3,}", "\n\n", html)
-    return html.strip()
+        text = text.replace(entity, char)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def _extract_body(payload: dict) -> str:
@@ -129,6 +134,105 @@ def _extract_body(payload: dict) -> str:
                 return result
 
     return ""
+
+
+def _extract_html_body(payload: dict) -> str | None:
+    """
+    Recursively find and return the RAW (undecoded-to-plain, unstripped) text/html part
+    of a Gmail message payload — unlike _extract_body, which converts HTML to plain text
+    via _strip_html, this preserves the original formatting for forwarding (BUG-027).
+    Returns None if the message has no HTML part at all, or only a whitespace-only one
+    (a plain-text-only original) — callers should fall back to plain-text-only in that case.
+    """
+    mime_type = payload.get("mimeType", "")
+
+    if mime_type == "text/html":
+        data = payload.get("body", {}).get("data", "")
+        if data:
+            decoded = _decode_part(data)
+            return decoded if decoded.strip() else None
+        return None
+
+    if mime_type.startswith("multipart/"):
+        for part in payload.get("parts", []):
+            result = _extract_html_body(part)
+            if result:
+                return result
+
+    return None
+
+
+class _BodyTagFinder(HTMLParser):
+    """
+    Finds the true structural <body> tag's end offset in raw HTML using a real HTML
+    tokenizer, not a regex — caught in security review as a genuine content-spoofing
+    bypass: a naive regex scan for "<body...>" matches the FIRST text occurrence
+    anywhere in the string, including one an attacker plants inside an HTML comment or
+    a <script> string literal (e.g. "<!--<body>-->") earlier than the real tag. That
+    would splice the "Forwarded message" disclosure header (sender/subject/date, plus
+    Jonathan's own note) into the comment/script — invisible to any standards-compliant
+    renderer — while the attacker's own real <body> content displays with zero
+    indication it was forwarded from someone else. HTMLParser correctly treats comment
+    and <script>/<style> content as opaque (no handle_starttag fires for tags inside
+    them), so the first real handle_starttag("body", ...) event is guaranteed to be the
+    genuine structural tag.
+
+    Gets the tag's absolute end offset by overriding parse_starttag() and capturing its
+    return value (the real absolute index into the fed buffer) right after
+    handle_starttag fires for it — NOT by reconstructing an offset from getpos()'s
+    (line, col) plus a separately-built line-offset table. An earlier version of this
+    class did exactly that using str.splitlines(), which splits on Python's full
+    universal-newline set (\\r, \\v, \\f, U+2028/U+2029, etc.) while HTMLParser's own
+    internal line counter only increments on literal \\n — any HTML mixing a real \\n
+    with one of those other separators before the real <body> tag desynced the two
+    counting schemes and reintroduced a variant of the exact same disclosure-bypass
+    this class exists to prevent (caught in a second security review pass, reproduced
+    directly against the shipped code before being fixed here).
+
+    MUST be fed exactly once, in a single feed() call before close() — parse_starttag's
+    returned offset is only absolute relative to the buffer as fed so far; HTMLParser
+    trims its internal buffer to the unconsumed tail after each feed() call, so an
+    offset captured after a SECOND feed() call would be relative to the trimmed buffer,
+    not the original full string, silently wrong (the exact same bug class again, just
+    via a different mechanism — this class enforces the constraint rather than leaving
+    it as an undocumented assumption a future caller could violate).
+    """
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self.body_end_offset = None
+        self._saw_body_this_tag = False
+        self._fed = False
+
+    def feed(self, data):
+        if self._fed:
+            raise RuntimeError("_BodyTagFinder must be fed exactly once, in a single feed() call.")
+        self._fed = True
+        super().feed(data)
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() == "body" and self.body_end_offset is None:
+            self._saw_body_this_tag = True
+
+    def parse_starttag(self, i):
+        self._saw_body_this_tag = False
+        endpos = super().parse_starttag(i)
+        if self._saw_body_this_tag and self.body_end_offset is None and endpos != -1:
+            self.body_end_offset = endpos
+        return endpos
+
+
+def _find_body_insertion_point(html_body: str) -> int | None:
+    """Absolute character offset right after the real <body ...> tag's close. Returns
+    None if html_body has no <body> tag at all (a bare fragment, not a full document),
+    or if parsing raises for any reason — callers should fall back to a plain prepend
+    in either case."""
+    parser = _BodyTagFinder()
+    try:
+        parser.feed(html_body)
+        parser.close()
+    except Exception:
+        return None
+    return parser.body_end_offset
 
 
 def _strip_quoted_content(body: str) -> str:
@@ -320,6 +424,12 @@ def get_thread_content(thread_id: str, max_chars: int = 8000) -> str:
         if cc_header:
             header_lines.append(f"Cc: {cc_header}")
         header_lines.append(f"Subject: {subject}")
+        # Named precisely (not bare "Message ID") to avoid colliding with the different,
+        # pre-existing "message_id" concept elsewhere in this codebase — the RFC822
+        # Message-ID: header used for reply-threading (get_thread_summary/send_email) —
+        # this is Gmail's own internal id, used by forward_email's gmail_message_id param
+        # to target a specific message within a multi-message thread (BUG-026).
+        header_lines.append(f"Gmail Message ID: {msg['id']}")
         parts.append("\n".join(header_lines) + f"\n\n{body}")
 
     combined = "\n\n---\n\n".join(parts)
@@ -511,22 +621,40 @@ def send_email(
     return resolved
 
 
-def get_forward_preview(thread_id: str) -> dict:
+def get_forward_preview(thread_id: str, gmail_message_id: str | None = None) -> dict:
     """
-    Sender/subject/date/attachments (filename, mimeType, size) and body of a thread's
-    most recent message, plus the thread's total message count — surfaced so a
-    >1-message thread doesn't silently forward only its most recent entry without
-    Jonathan noticing. Needs a full-format fetch (unlike get_thread_summary's
-    metadata-only fetch) since attachment parts and body content only appear in the
-    full payload.
+    Sender/subject/date/attachments (filename, mimeType, size)/body/html_body of a
+    specific message in a thread, plus the thread's total message count and the
+    selected message's 0-based position among them — surfaced so a >1-message thread
+    never silently forwards the wrong entry without Jonathan noticing (BUG-026).
+
+    Defaults to the thread's most recent message when gmail_message_id is omitted
+    (unchanged behavior from before BUG-026's fix — the common case is a single-message
+    thread). When given, gmail_message_id must belong to this thread — raises ValueError
+    otherwise. This is Gmail's own internal message id (msg["id"]), NOT the same thing as
+    get_thread_summary()'s "message_id" field (the RFC822 Message-ID: header used for
+    reply-threading) — named gmail_message_id everywhere specifically to avoid confusing
+    the two.
+
+    Needs a full-format fetch (unlike get_thread_summary's metadata-only fetch) since
+    attachment parts and body content only appear in the full payload.
     """
     service = _build_service()
     thread = service.users().threads().get(userId="me", id=thread_id, format="full").execute()
     messages = sorted(thread.get("messages", []), key=lambda m: int(m.get("internalDate", 0)))
     if not messages:
         raise ValueError(f"Thread {thread_id} has no messages.")
-    last = messages[-1]
-    payload = last.get("payload", {})
+
+    if gmail_message_id:
+        matches = [i for i, m in enumerate(messages) if m["id"] == gmail_message_id]
+        if not matches:
+            raise ValueError(f"Message {gmail_message_id} does not belong to thread {thread_id}.")
+        selected_index = matches[0]
+    else:
+        selected_index = len(messages) - 1
+
+    target = messages[selected_index]
+    payload = target.get("payload", {})
     headers = {h["name"]: h["value"] for h in payload.get("headers", [])}
     display_name, sender_email = _parse_sender(headers.get("From", ""))
 
@@ -561,39 +689,53 @@ def get_forward_preview(thread_id: str) -> dict:
     _walk(payload)
 
     return {
-        "gmail_message_id": last["id"],
+        "gmail_message_id": target["id"],
         "sender_name": display_name,
         "sender_email": sender_email,
         "subject": headers.get("Subject", "(no subject)"),
         "date": headers.get("Date", ""),
         "to_header": headers.get("To", ""),
         "message_count": len(messages),
+        "selected_index": selected_index,
         "attachments": attachments,
         "body": _extract_body(payload).strip(),
+        "html_body": _extract_html_body(payload),
     }
 
 
-def forward_email(thread_id: str, to: str, cc: str | None = None, bcc: str | None = None, note: str = "") -> None:
+def forward_email(
+    thread_id: str, to: str, gmail_message_id: str | None = None,
+    cc: str | None = None, bcc: str | None = None, note: str = "",
+) -> None:
     """
-    Forwards a thread's most recent message (including attachments) to to/cc/bcc, as a
+    Forwards a specific message in a thread (or the most recent, if gmail_message_id is
+    omitted — see get_forward_preview) including attachments, to to/cc/bcc, as a
     brand-new message — no threadId, no References to the original Message-ID (explicit
     choice: the new recipient isn't part of the original conversation; the tradeoff is
     the forwarded copy won't visually group with the original thread in Sent/All Mail).
+
+    Preserves the original message's real HTML formatting when it has one (BUG-027) —
+    sent as multipart/alternative (plain-text fallback + the original HTML, wrapped in a
+    "Forwarded message" header block) rather than manually rebuilding everything as a
+    plain-text quote. Falls back to plain-text-only, unchanged from before this fix, for
+    an original message with no HTML part.
 
     Rejects control characters in to/cc/bcc, the original subject, and each attachment
     filename — the filename case is a genuinely new risk: it comes from the ORIGINAL
     sender, reachable via arbitrary inbound mail, not just Jonathan's own input. Refuses
     if total attachment size exceeds MAX_FORWARD_ATTACHMENT_BYTES, checked from metadata
-    before downloading anything. If any single attachment fails to fetch, the whole
-    forward fails rather than silently sending one with an attachment missing — nothing
-    is sent until the final messages().send() call.
+    before downloading anything (this cap counts attachment bytes only, not html_body's
+    size — fine given how unlikely a multi-MB inline HTML body is in practice). If any
+    single attachment fails to fetch, the whole forward fails rather than silently
+    sending one with an attachment missing — nothing is sent until the final
+    messages().send() call.
     """
     from email import encoders
     from email.mime.base import MIMEBase
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
-    preview = get_forward_preview(thread_id)
+    preview = get_forward_preview(thread_id, gmail_message_id=gmail_message_id)
 
     to_pairs = _parse_addr_list(to)
     if not to_pairs:
@@ -622,6 +764,13 @@ def forward_email(thread_id: str, to: str, cc: str | None = None, bcc: str | Non
     for a in preview["attachments"]:
         _reject_control_chars("attachment filename", a["filename"])
 
+    if preview.get("html_body") and "cid:" in preview["html_body"]:
+        log.warning(
+            f"Forwarding message {preview['gmail_message_id']}: html_body contains "
+            f"'cid:' references (inline-embedded images) which are not resolved by this "
+            f"forward — those images will show as broken in the forwarded copy."
+        )
+
     service = _build_service()
 
     fetched_attachments = []
@@ -638,7 +787,7 @@ def forward_email(thread_id: str, to: str, cc: str | None = None, bcc: str | Non
             raw_bytes = _decode_bytes(att["data"])
         fetched_attachments.append((a["filename"], a["mime_type"], raw_bytes))
 
-    quoted = (
+    plain_quoted = (
         f"---------- Forwarded message ----------\n"
         f"From: {preview['sender_name']} <{preview['sender_email']}>\n"
         f"Date: {preview['date']}\n"
@@ -646,16 +795,55 @@ def forward_email(thread_id: str, to: str, cc: str | None = None, bcc: str | Non
         f"To: {preview['to_header']}\n\n"
         f"{preview['body']}"
     )
-    text_body = f"{note}\n\n{quoted}" if note.strip() else quoted
+    plain_text_body = f"{note}\n\n{plain_quoted}" if note.strip() else plain_quoted
 
-    msg = MIMEMultipart()
+    alt_part = MIMEMultipart("alternative")
+    alt_part.attach(MIMEText(plain_text_body, "plain"))
+
+    if preview.get("html_body"):
+        # Header fields embedded here are HTML-escaped (html.escape) — they originate
+        # with the ORIGINAL sender (arbitrary inbound mail), so an unescaped crafted
+        # sender name/subject could corrupt the surrounding HTML structure. This is a
+        # rendering-integrity guard, NOT a security guard and NOT the same thing as
+        # _reject_control_chars's CRLF/header-injection check above — these fields are
+        # never placed in a real MIME header here, only as escaped HTML text content (or
+        # inside an already-escaped `&lt;...&gt;` literal), never inside an unquoted HTML
+        # attribute — that invariant must hold for any future edit to this block too.
+        html_header = (
+            f"<div>{html.escape(note)}</div><br>" if note.strip() else ""
+        ) + (
+            f'<div style="border-top:1px solid #ccc;padding-top:1em;margin-top:1em;">'
+            f"---------- Forwarded message ---------<br>"
+            f"From: <b>{html.escape(preview['sender_name'])}</b> "
+            f"&lt;{html.escape(preview['sender_email'])}&gt;<br>"
+            f"Date: {html.escape(preview['date'])}<br>"
+            f"Subject: {html.escape(preview['subject'])}<br>"
+            f"To: {html.escape(preview['to_header'])}<br></div><br>"
+        )
+        # The original html_body is often a full standalone HTML document (<!DOCTYPE
+        # html><html><head>...), not a bare fragment — prepending the header block in
+        # front of that would put content before <!DOCTYPE>/<html>/<head>, invalid HTML5
+        # with unspecified renderer behavior. Inject immediately after the opening <body>
+        # tag instead, preserving the original document's <head>/<style>/<html> wrapper.
+        # Uses a real HTML tokenizer (_find_body_insertion_point), not a regex — a regex
+        # scan matches the first "<body...>"-shaped TEXT anywhere, including one an
+        # attacker plants inside an HTML comment or <script> string to make the real
+        # disclosure header land somewhere invisible (found in security review).
+        insert_at = _find_body_insertion_point(preview["html_body"])
+        if insert_at is not None:
+            full_html = preview["html_body"][:insert_at] + html_header + preview["html_body"][insert_at:]
+        else:
+            full_html = html_header + preview["html_body"]  # bare fragment, no <body> tag
+        alt_part.attach(MIMEText(full_html, "html"))
+
+    msg = MIMEMultipart("mixed")
+    msg.attach(alt_part)
     msg["To"] = to_fmt
     if cc_fmt:
         msg["Cc"] = cc_fmt
     if bcc_fmt:
         msg["Bcc"] = bcc_fmt
     msg["Subject"] = subject
-    msg.attach(MIMEText(text_body))
 
     for filename, mime_type, raw_bytes in fetched_attachments:
         maintype, _, subtype = mime_type.partition("/")

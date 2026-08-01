@@ -364,16 +364,21 @@ TOOLS = [
     {
         "name": "propose_forward_email",
         "description": (
-            "Propose forwarding an email thread's most recent message, including its "
-            "attachments, to one or more addresses. This NEVER sends immediately — "
+            "Propose forwarding a message, including its attachments and original "
+            "formatting, to one or more addresses. This NEVER sends immediately — "
             "Jonathan is shown the sender, subject, message count, and attachment list, "
             "and it is only forwarded if he replies with the literal phrase 'forward it' "
-            "in a separate message. Only call this when Jonathan has explicitly asked."
+            "in a separate message. Only call this when Jonathan has explicitly asked. "
+            "Defaults to a thread's most recent message. If the thread has more than one "
+            "distinct message (call read_email_thread first to check — its output shows "
+            "a 'Gmail Message ID:' line per message) and Jonathan means a specific one "
+            "other than the most recent, pass its id as gmail_message_id."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "thread_id": {"type": "string", "description": "Gmail thread_id whose most recent message will be forwarded."},
+                "thread_id": {"type": "string", "description": "Gmail thread_id containing the message to forward."},
+                "gmail_message_id": {"type": "string", "description": "Optional — forward this specific message (from read_email_thread's 'Gmail Message ID:' line) instead of the thread's most recent."},
                 "to": {"type": "string", "description": "Recipient email address."},
                 "cc": {"type": "string", "description": "Optional comma-separated CC address(es)."},
                 "bcc": {"type": "string", "description": "Optional comma-separated BCC address(es)."},
@@ -784,6 +789,7 @@ async def handle_turn(
                 proposed_forward_email = {
                     "thread_id": fwd_thread_id,
                     "to": fwd_to,
+                    "gmail_message_id": block.input.get("gmail_message_id") or None,
                     "cc": block.input.get("cc") or None,
                     "bcc": block.input.get("bcc") or None,
                     "note": block.input.get("note", ""),

@@ -252,6 +252,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 from core.tools.email.fetch import forward_email
                 forward_email(
                     thread_id=pending["thread_id"], to=pending["to"],
+                    gmail_message_id=pending.get("gmail_message_id"),
                     cc=pending.get("cc"), bcc=pending.get("bcc"),
                     note=pending.get("note", ""),
                 )
@@ -326,9 +327,10 @@ def _forward_email_proposal_text(p: dict) -> str:
     # rather than the model's paraphrase — same reasoning as _delete_email_proposal_text.
     try:
         from core.tools.email.fetch import get_forward_preview
-        preview = get_forward_preview(p["thread_id"])
+        preview = get_forward_preview(p["thread_id"], gmail_message_id=p.get("gmail_message_id"))
         count_note = (
-            f" (most recent of {preview['message_count']} messages in this thread)"
+            f" (message {preview['selected_index'] + 1} of {preview['message_count']} "
+            f"in this thread, dated {preview['date']})"
             if preview["message_count"] > 1 else ""
         )
         if preview["attachments"]:

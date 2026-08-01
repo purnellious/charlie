@@ -619,13 +619,14 @@ Investigate the send confirmation message builder in bot.py — the recipient fi
 
 ## BUG-026 — Forward tool can only forward the most recent message in a thread
 **Type:** Bug
-**Status:** Open
+**Status:** Closed
 **Priority:** Medium
 **Severity:** Medium — causes silent data loss when multiple emails are grouped in the same thread and only the most recent is forwarded
 **Blocks anything current:** No
 **Rough effort:** Medium
 **Logged:** 2026-08-01
 **Topic ID:** 2448
+**Resolved:** 2026-08-01
 
 **Problem:**
 propose_forward_email forwards only the most recent message in a thread. When multiple distinct emails share the same subject and get grouped into one thread (e.g. two separate Extra Space Storage receipts), there is no way to selectively forward an earlier message in the thread — it always picks the last one.
@@ -633,20 +634,27 @@ propose_forward_email forwards only the most recent message in a thread. When mu
 **What needs fixing:**
 Add the ability to specify a particular message within a thread to forward, rather than always defaulting to the most recent. Could be done by exposing a message_id parameter, or by surfacing individual messages in the thread for selection.
 
+**Resolved:** 2026-08-01 — grounded against the exact real thread Jonathan hit this on (`19fb992df84ac5be`: two separate Extra Space Storage receipts plus Jonathan's own earlier manual "Fwd:" reply, 3 messages total). Confirmed directly that the old code picked Jonathan's own prior forward, not either real receipt — some of what looked like BUG-027's formatting bug was actually this wrong-message-selected symptom.
+
+Added an optional `gmail_message_id` parameter threaded through `get_forward_preview()`/`forward_email()`/`propose_forward_email` — thread_id-based "most recent" stays the default, but a specific message can now be targeted, validated against the thread's own message list (clean error if it doesn't belong). Named `gmail_message_id`, not the shorter `message_id` — this codebase already uses bare `message_id` for a different thing (the RFC822 `Message-ID:` header used for reply-threading in `get_thread_summary`/`resolve_send_recipients`/`send_email`), and conflating the two given this exact codebase's history of similar-field-confusion bugs (BUG-023, BUG-025) would have been a real risk, not just a style nit. `get_thread_content()` (already touched for BUG-024) gains a `Gmail Message ID:` line per message so Charlie can find a specific one after reading a thread, and `propose_forward_email`'s tool description now explicitly tells Charlie to check there and pass a specific id when a thread has more than one distinct message. The confirmation preview always states which message is being forwarded when a thread has more than one (e.g. "message 2 of 3, dated ..."), regardless of whether it was explicit or defaulted, so ambiguity is never silent.
+
+This plan went through four rounds of independent review (an explicit ask from Jonathan to keep reviewing until both sides converged) — real, substantive issues were caught and fixed each round: an inconsistent/colliding parameter name (fixed to `gmail_message_id` throughout, including a couple of stale references the first fix pass itself missed), a fragile `<body>`-detection regex that broke on a `>` inside a quoted HTML attribute (fixed to an attribute-aware pattern, independently tested by the reviewing agent, not just trusted), a missing wiring point (the tool description never telling Charlie the feature existed), and one unused return field with an inaccurate justification (dropped rather than kept "for future use").
+
 **Touches:**
-TBD
+`core/tools/email/fetch.py` (`get_forward_preview`, `forward_email`, `get_thread_content`), `core/agent.py` (`propose_forward_email` schema + dispatch), `core/bot.py` (`_forward_email_proposal_text`, "forward it" dispatch)
 
 ---
 
 ## BUG-027 — forward_email sends a fresh email instead of a proper forward
 **Type:** Bug
-**Status:** Open
+**Status:** Closed
 **Priority:** High
 **Severity:** High — forwarded emails arrive as fresh plain-text messages, losing original formatting, attachments, and thread context entirely
 **Blocks anything current:** No
 **Rough effort:** Medium
 **Logged:** 2026-08-01
 **Topic ID:** 2462
+**Resolved:** 2026-08-01
 
 **Problem:**
 propose_forward_email/forward_email does not produce a proper email forward. Instead of forwarding the original message with its headers, formatting, and attachments intact (as a real "Fwd:"), it constructs a fresh email with only the note text. The result doesn't group with other forwarded receipts in the recipient's inbox and the original email content/formatting is completely lost.
@@ -654,7 +662,17 @@ propose_forward_email/forward_email does not produce a proper email forward. Ins
 **What needs fixing:**
 Rework forward_email to construct a proper MIME forward — the original message should be attached or inlined as a forwarded message (RFC 2822 compliant), with original headers (From, Date, Subject, To) included in the forward body, and original attachments re-attached. The result should look identical to hitting "Forward" in a real email client.
 
+**Resolved:** 2026-08-01 — verified directly against the real receipt this was reported on before designing anything: it has no real attachments at all (a `multipart/alternative` with only `text/plain`/`text/html` parts — so "losing attachments" specifically didn't apply to this email; the real loss was formatting), and its HTML references all images via external `https://` URLs, not `cid:`-embedded ones — meaning preserving the original HTML as-is is enough to preserve the look, no inline-image-rewriting complexity needed for this case.
+
+`forward_email()` now sends `multipart/alternative` (plain-text fallback + the real original HTML, wrapped in a "Forwarded message" header block) nested inside the existing `multipart/mixed` (attachments), instead of rebuilding everything as a single plain-text `MIMEText`. New `_extract_html_body()` in `fetch.py` returns the raw, unstripped HTML part (falls back to plain-text-only, unchanged from before, when the original has none). A real gap caught in design review: the actual receipt's HTML is a full standalone document (`<!DOCTYPE html><html><head>...`), the normal shape for marketing/receipt email — naively prepending the header block in front of it would produce invalid HTML5 with the header landing before `<!DOCTYPE>`/`<head>`. Fixed by detecting the opening `<body>` tag and injecting the header immediately after it, preserving the original document's `<head>`/`<style>` wrapper. Header fields embedded in this HTML block (sender name, subject, etc. — all attacker-influenced, since they come from the original sender) are `html.escape()`'d, a rendering-integrity guard distinct from `_reject_control_chars`'s existing CRLF/header-injection guard elsewhere in the same function. `cid:`-referenced inline images (not present in the email this was grounded against) aren't handled — logs a warning rather than silently producing broken image icons if a future forward target has them.
+
+**Security review found and fixed a real content-spoofing bypass (2026-08-01):** the `<body>`-tag detection was originally an attribute-aware regex (independently tested against several cases including a quoted-attribute-`>` edge case) — but a regex has no concept of HTML structure, so it matches the *first text occurrence* of something `<body...>`-shaped anywhere in the string, including one an attacker plants inside an HTML comment or a `<script>` string literal (e.g. `<!--<body>-->`) earlier than the real tag. That would splice the entire "Forwarded message" disclosure block — sender identity, subject, date, and Jonathan's own note — into the comment, invisible to any standards-compliant renderer, while the attacker's real, later `<body>` content displays with *zero indication it was forwarded from someone else*. Concretely: anyone who emails Jonathan could craft an HTML email that, once forwarded through Charlie to a third party, would appear to originate directly and solely from Jonathan, with no forwarding disclosure at all — a phishing/spoofing vector that defeats the exact safeguard this feature exists to provide. Fixed by replacing the regex with a real HTML tokenizer (Python's stdlib `html.parser.HTMLParser`, new `_BodyTagFinder`/`_find_body_insertion_point`) — comments and `<script>`/`<style>` content are opaque to a real parser, so only the genuine structural `<body>` tag ever fires a start-tag event.
+
+**A second confirmation pass on that exact fix caught a second, more subtle instance of the identical bug class:** the first version reconstructed an absolute string offset from `HTMLParser.getpos()`'s (line, column) plus a separately-built line-offset table (via `str.splitlines()`). `splitlines()` treats Python's full universal-newline set as line boundaries (`\r`, `\v`, `\f`, U+2028/U+2029, etc.), but `HTMLParser`'s own internal line counter only increments on a literal `\n` — any original HTML mixing a real `\n` with one of those other separators before the real `<body>` tag desynced the two counting schemes, landing the disclosure header at the wrong offset (reproduced directly: `"<html>\rfoo\n<body>hello</body></html>"` computed offset 13, splicing the header mid-tag, instead of the correct 17) — reopening the exact same disclosure-bypass via different math, not the same mechanism. Fixed by not reconstructing offsets from line/column at all: overriding `parse_starttag()` and capturing its own return value (the real absolute buffer index HTMLParser itself computes) the moment `handle_starttag` fires for "body," which sidesteps the line-counting mismatch entirely. Also added a defensive guard (raises if fed more than once) against a related, currently-unreachable failure mode the same reviewer identified: this technique's offset is only valid for a single, un-chunked `feed()` call, which happens to be how the only caller uses it today, but wasn't enforced — now it is, so a future refactor toward streamed/chunked feeding can't silently reintroduce this.
+
+Also fixed in the same pass: `import html` (for `html.escape`) was added at module level, shadowing `_strip_html`'s pre-existing same-named parameter — not a live bug (that function never needed `html.escape`), but a latent trap for a future edit; the parameter is now `raw_html`.
+
 **Touches:**
-TBD
+`core/tools/email/fetch.py` (`_extract_html_body`, `_BodyTagFinder`/`_find_body_insertion_point` new, `_strip_html` parameter renamed, `get_forward_preview`/`forward_email` extended)
 
 ---
