@@ -746,4 +746,6 @@ Investigate how get_thread_content() fetches and orders messages — likely eith
 **Touches:**
 TBD
 
+**Cross-reference, [[BUG-020]]:** `read_email_attachment` (built the same day this bug was logged) defaults to a thread's most recent message via the identical pattern implicated here — `threads().get()`'s message list, sorted by `internalDate`, take the last one (`get_forward_preview`/`get_thread_summary` share this same pattern too, and predate this bug). Shipped anyway rather than held back: the exposure is narrower there (only matters when `gmail_message_id` is omitted, the target attachment is genuinely on the newest message, and that message isn't surfaced — and the tool's own description was just hardened this session to push toward always passing `gmail_message_id` whenever a thread has multiple messages), and whichever fix lands here will apply to `read_email_attachment` automatically, since it's the same underlying fetch. Whoever resolves this bug should verify `read_email_attachment`'s default-message-targeting behavior as part of confirming the fix, not just `read_email_thread`'s digest.
+
 ---
