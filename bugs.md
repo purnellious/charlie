@@ -640,6 +640,7 @@ TBD
 **Blocks anything current:** No
 **Rough effort:** Medium
 **Logged:** 2026-08-01
+**Topic ID:** 2462
 
 **Problem:**
 propose_forward_email/forward_email does not produce a proper email forward. Instead of forwarding the original message with its headers, formatting, and attachments intact (as a real "Fwd:"), it constructs a fresh email with only the note text. The result doesn't group with other forwarded receipts in the recipient's inbox and the original email content/formatting is completely lost.
