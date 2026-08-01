@@ -598,6 +598,7 @@ TBD
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-07-31
+**Topic ID:** 2384
 
 **Problem:**
 After a successful email send, the confirmation message displayed "Sent to None" instead of the actual recipient addresses. The email itself sent correctly (verified in Sent folder). Observed on a reply-all send to purnelljonathan@gmail.com with laricalschnell@gmail.com CC'd.
