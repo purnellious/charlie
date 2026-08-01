@@ -589,3 +589,23 @@ Investigate how read_email_thread parses and surfaces CC/To/BCC headers from the
 TBD
 
 ---
+
+## BUG-025 — Email send confirmation displays "Sent to None" instead of recipient addresses
+**Type:** Bug
+**Status:** Open
+**Priority:** Medium
+**Severity:** Medium — confusing and misleading, but email sends correctly; cosmetic issue in the confirmation message
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-07-31
+
+**Problem:**
+After a successful email send, the confirmation message displayed "Sent to None" instead of the actual recipient addresses. The email itself sent correctly (verified in Sent folder). Observed on a reply-all send to purnelljonathan@gmail.com with laricalschnell@gmail.com CC'd.
+
+**What needs fixing:**
+Investigate the send confirmation message builder in bot.py — the recipient field is resolving to None instead of the actual To/CC addresses at confirmation time. Likely the resolved recipients aren't being passed through to the confirmation message correctly.
+
+**Touches:**
+TBD
+
+---
