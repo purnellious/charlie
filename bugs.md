@@ -577,6 +577,7 @@ Add a forward_email tool that uses the Gmail API to forward an existing thread/m
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-07-31
+**Topic ID:** 2366
 
 **Problem:**
 When reading an email thread, Charlie is not correctly surfacing CC addresses from the email headers. Jonathan manually verified that laricalschnell@gmail.com was CC'd on thread 19fbb1018ab8cff5, but Charlie reported no CC addresses present.
