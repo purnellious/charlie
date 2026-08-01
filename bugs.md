@@ -568,3 +568,23 @@ Add a forward_email tool that uses the Gmail API to forward an existing thread/m
 `core/tools/email/fetch.py`, `core/agent.py`, `core/bot.py`, `core/tools/email/__init__.py`, `bugs.md`, `data-architecture.md`, `devlog.md`.
 
 ---
+
+## BUG-024 — read_email_thread not surfacing CC addresses
+**Type:** Bug
+**Status:** Open
+**Priority:** High
+**Severity:** High — Charlie is misreporting email recipients, leading to incorrect reply-all behaviour and potential missed recipients
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-07-31
+
+**Problem:**
+When reading an email thread, Charlie is not correctly surfacing CC addresses from the email headers. Jonathan manually verified that laricalschnell@gmail.com was CC'd on thread 19fbb1018ab8cff5, but Charlie reported no CC addresses present.
+
+**What needs fixing:**
+Investigate how read_email_thread parses and surfaces CC/To/BCC headers from the Gmail API response. Ensure all recipient fields are correctly extracted and reported to the agent so reply-all and recipient visibility work accurately.
+
+**Touches:**
+TBD
+
+---
