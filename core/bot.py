@@ -734,31 +734,27 @@ def _wait_for_network(max_wait_seconds=120, attempt_timeout=5):
     transient.
     """
     import socket
-    import threading
     import time
 
-    def _resolve(result: dict):
-        try:
-            socket.getaddrinfo("api.telegram.org", 443)
-            result["ok"] = True
-        except socket.gaierror:
-            result["ok"] = False
+    from core.utils import run_with_timeout
+
+    def _resolve():
+        socket.getaddrinfo("api.telegram.org", 443)
 
     start = time.time()
     while time.time() - start < max_wait_seconds:
-        result = {}
-        # A fresh daemon thread per attempt — never reuse/join a worker across
-        # attempts. If getaddrinfo hangs (unresponsive resolver, not just an
-        # erroring one), that thread is simply abandoned: daemon=True means it
-        # won't block process exit, and starting a new thread next attempt
-        # (rather than queuing behind a pooled worker) means one hung attempt
-        # can't stall every attempt after it.
-        t = threading.Thread(target=_resolve, args=(result,), daemon=True)
-        t.start()
-        t.join(timeout=attempt_timeout)
-        if result.get("ok"):
+        # A fresh daemon thread per attempt (inside run_with_timeout) — never
+        # reuse/join a worker across attempts. If getaddrinfo hangs (unresponsive
+        # resolver, not just an erroring one), that thread is simply abandoned:
+        # daemon=True means it won't block process exit, and starting a new thread
+        # next attempt (rather than queuing behind a pooled worker) means one hung
+        # attempt can't stall every attempt after it.
+        try:
+            run_with_timeout(_resolve, attempt_timeout)
             return
-        if not t.is_alive():
+        except TimeoutError:
+            continue  # hung attempt abandoned — retry immediately, no sleep
+        except socket.gaierror:
             time.sleep(2)
     log.warning(f"Network still not resolving after {max_wait_seconds}s — starting anyway")
 

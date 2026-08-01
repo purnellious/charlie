@@ -22,6 +22,36 @@ MAX_BODY_CHARS = 500
 DEFAULT_LOOKBACK_MINUTES = 3  # defensive fallback only — callers should pass an explicit since_iso
 MAX_FORWARD_ATTACHMENT_BYTES = 20 * 1024 * 1024  # safety margin under Gmail's 25MB send limit
 
+# read_email_attachment (BUG-020) — three independent signals, all required to agree,
+# before anything is parsed. MIME type + extension alone only defends against an
+# accidental mislabel, not a deliberate attacker who trivially sets both fields to
+# whatever they want while the underlying bytes are anything else — magic bytes are the
+# real defense, and need no python-magic/libmagic dependency.
+ALLOWED_ATTACHMENT_TYPES = {
+    "application/pdf": {".pdf"},
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {".docx"},
+    "text/plain": {".txt"},
+}
+MAGIC_BYTES = {
+    # Per the PDF spec, a conformant reader accepts %PDF- anywhere in the first 1024
+    # bytes (some generators prepend a few bytes) — checked as a windowed search over
+    # the first 1024 bytes, not a strict startswith, so legitimate non-malicious PDFs
+    # aren't falsely rejected. text/plain has no reliable magic-byte signature, so it's
+    # absent here — that type is verified by MIME+extension alone, a narrower guarantee
+    # disclosed in read_email_attachment's own docstring.
+    "application/pdf": (b"%PDF-",),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (b"PK\x03\x04",),
+}
+MAX_ATTACHMENT_DOWNLOAD_BYTES = 15 * 1024 * 1024  # checked before downloading, from metadata
+MAX_DOCX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024    # zip-bomb guard, see _check_docx_not_zip_bomb
+DOCX_SCAN_CHUNK_BYTES = 1 * 1024 * 1024           # bounded-read chunk size for that guard
+MAX_ATTACHMENT_TEXT_CHARS = 8000                   # matches get_thread_content's truncation pattern
+ATTACHMENT_PARSE_TIMEOUT_SECONDS = 20
+# Shared prefix so core/agent.py's dispatch can recognize this case (regardless of the
+# type-specific wording appended by _no_extractable_text_message) for persistence-scrub
+# purposes — it's metadata about the attachment, not attachment content.
+NO_ATTACHMENT_TEXT_PREFIX = "No extractable text found"
+
 
 def _build_service():
     creds = get_credentials()
@@ -38,6 +68,67 @@ def _decode_bytes(data: str) -> bytes:
     text decode."""
     padded = data + "=" * (-len(data) % 4)
     return base64.urlsafe_b64decode(padded)
+
+
+def _walk_attachments(payload: dict, include_size: bool = True, _depth: int = 0) -> list[dict]:
+    """
+    Recursively collect attachment metadata (filename, mime_type, attachment_id or
+    inline_data, size) from a message payload's MIME parts. Shared by get_forward_preview
+    and read_email_attachment (BUG-020) instead of a third copy of this walk.
+
+    Depth-capped at 10 levels of `parts` nesting — the original single-caller version
+    of this walk (once per Jonathan-initiated forward_email) had no such guard, fine at
+    that call frequency; get_thread_content now runs it on every message of every
+    thread on every read_email_thread call, a real increase in exposure to a
+    pathologically deep/nested MIME structure from an attacker-controlled inbound
+    message (caught in design review). Stops collecting past that depth rather than
+    raising, but logs a warning when it does (code review caught that get_forward_preview
+    — previously unbounded — now shares this same cap, so a truncation there could
+    otherwise silently drop an attachment from a forward with no signal anywhere,
+    matching the existing precedent of forward_email's own cid: warning below for an
+    analogous "can't fully solve, but must not be silent" case).
+
+    include_size=False skips computing an inline attachment's size (normally
+    len(_decode_bytes(body["data"])), i.e. a full base64 decode just to get a number) —
+    used by get_thread_content's Attachments: line, which only needs filenames and
+    would otherwise force that decode on every message of every thread.
+    """
+    if _depth > 10:
+        log.warning(
+            "_walk_attachments: hit the 10-level MIME nesting depth cap — any "
+            "attachments deeper than this were not collected."
+        )
+        return []
+
+    attachments = []
+    filename = payload.get("filename")
+    body = payload.get("body", {})
+    # Gmail's full-format response references most attachments via attachmentId
+    # (fetched separately), but can inline small ones directly as body.data instead —
+    # both cases are handled so a small attachment isn't silently dropped.
+    if filename and body.get("attachmentId"):
+        attachments.append({
+            "filename": filename,
+            "mime_type": payload.get("mimeType", "application/octet-stream"),
+            "attachment_id": body["attachmentId"],
+            "inline_data": None,
+            "size": body.get("size", 0),
+        })
+    elif filename and body.get("data"):
+        if include_size:
+            size = body.get("size") or len(_decode_bytes(body["data"]))
+        else:
+            size = body.get("size", 0)
+        attachments.append({
+            "filename": filename,
+            "mime_type": payload.get("mimeType", "application/octet-stream"),
+            "attachment_id": None,
+            "inline_data": body["data"],
+            "size": size,
+        })
+    for sub in payload.get("parts", []):
+        attachments.extend(_walk_attachments(sub, include_size=include_size, _depth=_depth + 1))
+    return attachments
 
 
 def _parse_addr_list(raw: str | None) -> list[tuple[str, str]]:
@@ -430,6 +521,14 @@ def get_thread_content(thread_id: str, max_chars: int = 8000) -> str:
         # this is Gmail's own internal id, used by forward_email's gmail_message_id param
         # to target a specific message within a multi-message thread (BUG-026).
         header_lines.append(f"Gmail Message ID: {msg['id']}")
+        # Previously this function never surfaced whether a message had attachments at
+        # all — no way for Jonathan or Charlie to know one existed to read via
+        # read_email_attachment without a separate lookup (BUG-020). include_size=False
+        # since only filenames are needed here.
+        attachment_list = _walk_attachments(payload, include_size=False)
+        if attachment_list:
+            names = ", ".join(a["filename"] for a in attachment_list)
+            header_lines.append(f"Attachments: {names}")
         parts.append("\n".join(header_lines) + f"\n\n{body}")
 
     combined = "\n\n---\n\n".join(parts)
@@ -658,35 +757,7 @@ def get_forward_preview(thread_id: str, gmail_message_id: str | None = None) -> 
     headers = {h["name"]: h["value"] for h in payload.get("headers", [])}
     display_name, sender_email = _parse_sender(headers.get("From", ""))
 
-    attachments = []
-
-    def _walk(part):
-        filename = part.get("filename")
-        body = part.get("body", {})
-        # Gmail's full-format response references most attachments via attachmentId
-        # (fetched separately, see forward_email), but can inline small ones directly
-        # as body.data instead — both cases are handled so a small attachment isn't
-        # silently dropped from the forward.
-        if filename and body.get("attachmentId"):
-            attachments.append({
-                "filename": filename,
-                "mime_type": part.get("mimeType", "application/octet-stream"),
-                "attachment_id": body["attachmentId"],
-                "inline_data": None,
-                "size": body.get("size", 0),
-            })
-        elif filename and body.get("data"):
-            attachments.append({
-                "filename": filename,
-                "mime_type": part.get("mimeType", "application/octet-stream"),
-                "attachment_id": None,
-                "inline_data": body["data"],
-                "size": body.get("size") or len(_decode_bytes(body["data"])),
-            })
-        for sub in part.get("parts", []):
-            _walk(sub)
-
-    _walk(payload)
+    attachments = _walk_attachments(payload, include_size=True)
 
     return {
         "gmail_message_id": target["id"],
@@ -855,6 +926,299 @@ def forward_email(
 
     body_dict = {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}
     service.users().messages().send(userId="me", body=body_dict).execute()
+
+
+def _parse_with_timeout(func, timeout_seconds):
+    """
+    Run func() bounded by timeout_seconds, via the shared core.utils.run_with_timeout
+    (a fresh daemon thread + join(timeout=...), matching the pattern already proven in
+    bot.py's _wait_for_network — consolidated into one shared helper after code review
+    flagged the two as independently hand-rolling the identical idiom, BUG-020).
+    Translates the shared helper's generic TimeoutError into a clean ValueError specific
+    to attachment parsing, and re-raises func()'s own exception (e.g. a ValueError
+    already carrying a clean, no-partial-content message) if it failed for another
+    reason.
+
+    Note: bounding wall-clock time does not reclaim the memory of an abandoned hung
+    parse (raw_bytes, up to MAX_ATTACHMENT_DOWNLOAD_BYTES, stays referenced by the
+    still-running daemon thread's closure for the life of the process, since Python
+    cannot forcibly kill a thread) — a real but low-severity trade-off, disclosed here
+    rather than fixed, since actually reclaiming it would need process-based isolation
+    (killable on timeout), a larger change than this guard's scope (caught in code
+    review).
+    """
+    from core.utils import run_with_timeout
+
+    try:
+        return run_with_timeout(func, timeout_seconds)
+    except TimeoutError:
+        raise ValueError(f"Parsing timed out after {timeout_seconds} seconds.")
+
+
+def _check_docx_not_zip_bomb(raw_bytes: bytes) -> None:
+    """
+    Raises ValueError if this DOCX (a zip archive) would decompress past
+    MAX_DOCX_UNCOMPRESSED_BYTES. Never trusts ZipInfo.file_size (the zip's own
+    declared, attacker-controlled "uncompressed size" metadata) — zipfile does not
+    validate that field against the real decompressed output until the CRC-32 check at
+    the end of a full .read(), so a crafted file with a small, honest declared size and
+    a compressed stream that actually inflates to gigabytes would pass a metadata-only
+    check and still force the full decompression this guard exists to prevent
+    (confirmed by direct construction during design review).
+
+    Instead streams every member (not just XML-named ones — python-docx's own package
+    loader, PackageReader._walk_phys_parts -> blob_for, unboundedly reads any
+    relationship-reachable part regardless of physical name, including embedded media,
+    so a zip bomb hidden in a non-XML-named member would otherwise sail past a
+    name-scoped check and still get fully decompressed by python-docx's own loader) via
+    zf.open(info) + repeated .read(DOCX_SCAN_CHUNK_BYTES) calls — never a bare
+    .read()/.read(-1), which has its own unbounded accumulate-until-eof path — tallying
+    real decompressed bytes across all members as they're produced and aborting the
+    moment the running total exceeds MAX_DOCX_UNCOMPRESSED_BYTES.
+
+    No separate XML-entity-expansion ("billion laughs") scan is built on top of this:
+    python-docx==1.2.0 constructs every one of its lxml parsers with
+    resolve_entities=False (docx/oxml/parser.py, docx/opc/oxml.py), which is exactly
+    the setting that prevents entity-expansion blowup, verified by reading the actual
+    installed library's source rather than assumed — see requirements.txt's pin comment
+    for why this specific version matters.
+    """
+    import io
+    import zipfile
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(raw_bytes))
+    except zipfile.BadZipFile as e:
+        raise ValueError(f"Could not parse DOCX: not a valid zip archive ({e}).")
+
+    total = 0
+    for info in zf.infolist():
+        if info.is_dir():
+            continue
+        with zf.open(info) as member:
+            while True:
+                chunk = member.read(DOCX_SCAN_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_DOCX_UNCOMPRESSED_BYTES:
+                    raise ValueError(
+                        f"Refusing to parse this DOCX: it would decompress to more "
+                        f"than {MAX_DOCX_UNCOMPRESSED_BYTES} bytes (possible zip bomb)."
+                    )
+
+
+def _no_extractable_text_message(mime_type: str) -> str:
+    """
+    Distinct wording per type — code review caught that a fixed "this may be a
+    scanned/image-based file" explanation was shown even for a genuinely empty
+    text/plain file or a DOCX with only an image and no text runs, misleadingly
+    pointing Jonathan toward an unrelated OCR/scanning explanation. Always starts
+    with NO_ATTACHMENT_TEXT_PREFIX regardless of type.
+    """
+    if mime_type == "application/pdf":
+        return f"{NO_ATTACHMENT_TEXT_PREFIX} — this may be a scanned/image-based PDF with no text layer."
+    return f"{NO_ATTACHMENT_TEXT_PREFIX} — this file appears to have no text content."
+
+
+def _decode_text_attachment(raw_bytes: bytes) -> str:
+    """
+    Decode a text/plain attachment's bytes, without assuming UTF-8 — code review
+    caught that a hardcoded utf-8 decode with errors="replace" silently garbles a
+    legitimately-typed plain-text file in another common encoding (UTF-16 with BOM,
+    or Windows-1252/Latin-1, both common from older Windows tools) into a wall of
+    U+FFFD replacement characters with no indication anything was wrong.
+
+    Checks for a BOM first (UTF-8/UTF-16/UTF-32 all have `bytes.decode` codecs that
+    detect and strip their own BOM automatically), then tries strict UTF-8 (the
+    modern common case), then falls back to cp1252 (a superset of Latin-1 for the
+    printable range, and the most common legacy Windows text encoding) — cp1252 never
+    raises on arbitrary bytes, so it's always a valid final fallback, only reached
+    after both signal-based attempts fail.
+    """
+    for bom, encoding in (
+        (b"\xef\xbb\xbf", "utf-8-sig"),
+        (b"\xff\xfe\x00\x00", "utf-32"),
+        (b"\x00\x00\xfe\xff", "utf-32"),
+        (b"\xff\xfe", "utf-16"),
+        (b"\xfe\xff", "utf-16"),
+    ):
+        if raw_bytes.startswith(bom):
+            return raw_bytes.decode(encoding, errors="replace")
+    try:
+        return raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw_bytes.decode("cp1252", errors="replace")
+
+
+def _extract_pdf_text(raw_bytes: bytes) -> str:
+    """
+    Extracts text page-by-page, isolating a single page's extraction failure from the
+    rest of the document — code review caught that wrapping the whole multi-page
+    extraction in one try/except meant one bad page (e.g. a malformed object on page
+    12 of an otherwise-valid 50-page PDF) discarded every other page's successfully
+    extracted text and reported total failure. Only raises (whole-document failure) if
+    the reader itself can't be constructed, or if every single page fails — either
+    case genuinely indicates a corrupted/malformed file, not just one bad page.
+    """
+    import io
+
+    import pypdf
+
+    try:
+        reader = pypdf.PdfReader(io.BytesIO(raw_bytes))
+        num_pages = len(reader.pages)
+    except Exception:
+        # Never include the raw library exception (or any partial extracted text) in
+        # this message — an error-path result is never scrubbed from persisted history
+        # the way a genuine has_content result is (design review).
+        raise ValueError("Could not parse PDF: corrupted or malformed file.")
+
+    pages_text = []
+    any_succeeded = False
+    for i in range(num_pages):
+        try:
+            pages_text.append(reader.pages[i].extract_text() or "")
+            any_succeeded = True
+        except Exception:
+            continue  # skip this page only — keep whatever else extracts cleanly
+
+    if num_pages and not any_succeeded:
+        raise ValueError("Could not parse PDF: corrupted or malformed file.")
+
+    return "\n".join(pages_text)
+
+
+def _extract_docx_text(raw_bytes: bytes) -> str:
+    import io
+
+    import docx
+
+    try:
+        document = docx.Document(io.BytesIO(raw_bytes))
+        return "\n".join(p.text for p in document.paragraphs)
+    except Exception:
+        raise ValueError("Could not parse DOCX: corrupted or malformed file.")
+
+
+def read_email_attachment(thread_id: str, filename: str, gmail_message_id: str | None = None) -> str:
+    """
+    Fetch and extract text from one attachment of a specific message (or the thread's
+    most recent, if gmail_message_id is omitted — same convention as forward_email).
+
+    Three independent signals must all agree before anything is parsed: the MIME type
+    Gmail reports (copied verbatim from the ORIGINAL SENDER's own Content-Type header —
+    not independently verified by Gmail against the actual bytes), the filename
+    extension (compared case-insensitively, so 'Invoice.PDF' isn't wrongly refused),
+    and — the real defense against a deliberate attacker, since the first two are both
+    sender-controlled and trivially made to agree with each other while the underlying
+    bytes are anything else — the file's actual magic bytes, checked after download,
+    before parsing. Refuses (ValueError) if any of the three disagree. text/plain has
+    no reliable magic-byte signature, so only MIME+extension apply for that one type —
+    a narrower guarantee, disclosed rather than hidden.
+
+    Refuses if the attachment exceeds MAX_ATTACHMENT_DOWNLOAD_BYTES, checked from
+    metadata before downloading anything. For the DOCX case, _check_docx_not_zip_bomb
+    additionally guards against decompression bombs before python-docx ever opens the
+    archive — see that function's docstring for why XML-entity-expansion needs no
+    separate guard here.
+
+    The actual parse call (pypdf/python-docx) runs with a hard wall-clock timeout via
+    _parse_with_timeout — pypdf has a documented history of crafted-PDF denial-of-service
+    issues (circular object/page-tree references, pathological decompression-filter
+    behavior) that hang rather than raise; a try/except alone doesn't catch a call that
+    never returns.
+
+    Extracted text is truncated at MAX_ATTACHMENT_TEXT_CHARS, matching
+    get_thread_content's pattern, with a note if truncated. A successful parse with
+    zero extractable text (e.g. a scanned/image-only PDF with no text layer — pypdf
+    returns "" per page, not an exception) returns a NO_ATTACHMENT_TEXT_PREFIX-prefixed
+    message (wording varies by type — see _no_extractable_text_message) — callers
+    (core/agent.py's dispatch) must treat that case like an error for persistence-scrub
+    purposes: it's metadata about the attachment, not attachment content, so there's
+    nothing to scrub.
+
+    Every error path (raised as ValueError) carries metadata only (filename, error
+    type) — NEVER any partially-extracted attachment text, even in a parse-failure
+    message — since an error-path result is never scrubbed from persisted history the
+    way a genuine has_content result is (design review).
+    """
+    import os
+
+    service = _build_service()
+    thread = service.users().threads().get(userId="me", id=thread_id, format="full").execute()
+    messages = sorted(thread.get("messages", []), key=lambda m: int(m.get("internalDate", 0)))
+    if not messages:
+        raise ValueError(f"Thread {thread_id} has no messages.")
+
+    if gmail_message_id:
+        matches = [m for m in messages if m["id"] == gmail_message_id]
+        if not matches:
+            raise ValueError(f"Message {gmail_message_id} does not belong to thread {thread_id}.")
+        target = matches[0]
+    else:
+        target = messages[-1]
+
+    payload = target.get("payload", {})
+    attachments = _walk_attachments(payload, include_size=True)
+    matching = [a for a in attachments if a["filename"] == filename]
+    if not matching:
+        raise ValueError(f"No attachment named '{filename}' found on this message.")
+    attachment = matching[0]  # first match if somehow duplicated — known, disclosed limitation
+
+    mime_type = attachment["mime_type"]
+    if mime_type not in ALLOWED_ATTACHMENT_TYPES:
+        raise ValueError(
+            f"Refusing to read '{filename}': attachment type '{mime_type}' is not "
+            f"supported. Only PDF, DOCX, and plain-text attachments can be read."
+        )
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_ATTACHMENT_TYPES[mime_type]:
+        raise ValueError(
+            f"Refusing to read '{filename}': its file extension does not match its "
+            f"reported type ('{mime_type}')."
+        )
+
+    if attachment["size"] > MAX_ATTACHMENT_DOWNLOAD_BYTES:
+        raise ValueError(
+            f"Refusing to read '{filename}': size ({attachment['size']} bytes) exceeds "
+            f"the {MAX_ATTACHMENT_DOWNLOAD_BYTES}-byte limit."
+        )
+
+    if attachment["inline_data"]:
+        raw_bytes = _decode_bytes(attachment["inline_data"])
+    else:
+        try:
+            att = service.users().messages().attachments().get(
+                userId="me", messageId=target["id"], id=attachment["attachment_id"]
+            ).execute()
+        except Exception as e:
+            raise ValueError(f"Could not fetch attachment '{filename}': {e}")
+        raw_bytes = _decode_bytes(att["data"])
+
+    if mime_type in MAGIC_BYTES:
+        window = raw_bytes[:1024]
+        if not any(sig in window for sig in MAGIC_BYTES[mime_type]):
+            raise ValueError(
+                f"Refusing to read '{filename}': its actual content does not match its "
+                f"reported type ('{mime_type}') — the file's real format could not be verified."
+            )
+
+    if mime_type == "application/pdf":
+        text = _parse_with_timeout(lambda: _extract_pdf_text(raw_bytes), ATTACHMENT_PARSE_TIMEOUT_SECONDS)
+    elif mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        _check_docx_not_zip_bomb(raw_bytes)
+        text = _parse_with_timeout(lambda: _extract_docx_text(raw_bytes), ATTACHMENT_PARSE_TIMEOUT_SECONDS)
+    else:  # text/plain
+        text = _decode_text_attachment(raw_bytes)
+
+    if not text.strip():
+        return _no_extractable_text_message(mime_type)
+
+    if len(text) > MAX_ATTACHMENT_TEXT_CHARS:
+        text = text[:MAX_ATTACHMENT_TEXT_CHARS] + "\n\n[truncated]"
+
+    return f"Contents of '{filename}':\n\n{text}"
 
 
 def trash_thread(thread_id: str) -> None:

@@ -460,7 +460,7 @@ Wrap each direct Gmail API call site in `asyncio.to_thread(...)`, consistent wit
 
 ## BUG-020 — Attachment reading not yet built
 **Type:** Debt
-**Status:** Open
+**Status:** Closed (2026-08-01)
 **Priority:** Medium
 **Severity:** N/A — capability gap, not a defect. Third piece of the agreed email write-capability roadmap (notify+suggest → search/read+preferences → archive/mark-read → send/delete → attachment reading), the only piece not yet started.
 **Blocks anything current:** No
@@ -483,6 +483,20 @@ Needs its own hardening pass distinct from the email-body work already done, sin
 
 **Touches:**
 `core/tools/email/fetch.py` (new function(s)), `core/agent.py` (new tool), `requirements.txt` (new parsing dependencies), `data-architecture.md`
+
+**Resolution (2026-08-01):** Built `read_email_attachment` (`core/tools/email/fetch.py`) — PDF/DOCX/plain-text only, no propose-gate needed (read-only, same trust tier as `search_email`/`read_email_thread`). Went through 7 rounds of independent Plan-agent design review before implementation (matching BUG-026/027's precedent), each round catching a real, concrete gap in the previous one's fix:
+1. Two must-fix gaps: MIME+extension alone is spoofable (added magic-byte checking as a third required signal); `pypdf`/`python-docx` have unaddressed DoS classes (PDF hang, DOCX zip-bomb/entity-expansion).
+2. The zip-bomb pre-scan's original design (trusting `ZipInfo.file_size`) was unsound — `zipfile` doesn't validate that field until after full decompression. Fixed via bounded chunked reads.
+3. The entity/DOCTYPE literal scan riding on those chunked reads could miss a token split across a chunk boundary. Fixed via a 16-byte overlap tail.
+4. The byte-tally was scoped to XML-named members only, but `python-docx`'s real loader (`PackageReader._walk_phys_parts`) unboundedly reads every relationship-reachable part regardless of name. Fixed by scoping to the whole archive.
+5. The entity/DOCTYPE scan had the same name-scoping flaw. Investigating the fix surfaced that `python-docx==1.2.0` already constructs its lxml parsers with `resolve_entities=False` (verified directly against the installed library's source) — closing entity-expansion by default. The hand-rolled scan was removed entirely rather than further patched, since keeping it produced real false positives on legitimate SVG/altChunk content for a risk the library already closes.
+6. Final full-plan re-review confirmed convergence with no further findings.
+
+Then a Tier-3 `/code-review` + `/security-review` pass on the actual implementation. Security review (independently verified XXE/SSRF via a local HTTP listener test — zero requests received; zip-slip; filename/path-injection) found no HIGH/MEDIUM findings. Code review found 9 issues, all addressed same-session: a depth-cap regression silently narrowing the pre-existing `forward_email` path (fixed — now logs a warning on truncation); hardcoded UTF-8 decoding for plain-text attachments (fixed — BOM detection + cp1252 fallback); ambiguous tool docs causing wrong-message targeting in multi-message threads (fixed — explicit gmail_message_id guidance); a single bad PDF page discarding all other pages' text (fixed — per-page isolation); a misleading "scanned/image-based" message for non-PDF empty-text cases (fixed — type-aware wording); duplicated timeout-thread logic vs `bot.py`'s `_wait_for_network` (fixed — extracted to shared `core/utils.py`); and this doc/devlog gap (fixed here). One finding (memory not reclaimed on an abandoned hung-parse thread) was disclosed in code rather than fixed — would need process-based isolation, out of this build's scope.
+
+Verified end-to-end against the real mailbox (a genuine Regus invoice PDF attachment), plus `get_forward_preview`/`forward_email` re-tested post-refactor to confirm no regression on the existing propose-gated path. Full design detail, residual-gap disclosures, and the three-signal/zip-bomb/timeout mechanisms are documented in `data-architecture.md`'s new "Read capability: attachment reading" entry.
+
+This is the actual, proven test of [[BUG-018]]'s discipline referenced above — shipped with the MIME+extension+magic-byte allowlist, memory-safe parsing libraries, content-not-instructions framing, and a propose-gate-exemption reasoning that was itself reviewed, not assumed.
 
 ---
 
