@@ -428,6 +428,8 @@ The real mitigation is structural, not verbal: consequential actions must requir
 - Item 4 (attachment reading's own file-parsing hardening) stays tracked under [[BUG-020]], which already specifies it in full — no separate tracking needed here.
 - Item 3 (periodic adversarial testing) had no natural single completion point, so it's spun out into its own dedicated bug, [[BUG-028]], rather than being the reason this stays open forever.
 
+**Explicit caveat, raised directly by Jonathan and worth recording rather than glossing over:** closing this bug reflects that the *rule* is now documented and enforced (checklist item, data-architecture.md) — it does not mean the rule has been *proven* to hold against a genuinely new, higher-risk case. That proof is [[BUG-020]]'s job specifically; its entry now carries an explicit note that a build shipping without the hardening it already specifies would be a direct failure of this bug's discipline, not an unrelated new finding. Deliberately chose not to reopen BUG-018 to track that — the connection is recorded in BUG-020 instead, so this bug's own narrow scope (write + enforce the rule) can stay closed on its own terms.
+
 **Touches:**
 `data-architecture.md`, `principles.md` (Principle 11 checklist)
 
@@ -476,6 +478,8 @@ Needs its own hardening pass distinct from the email-body work already done, sin
 - Extracted text treated with the same "content, not instructions" discipline already applied to email bodies (see [[BUG-018]]) — no special exemption just because it came from a file instead of a message body.
 - A length cap on extracted text, matching `read_email_thread`'s existing `max_chars` pattern, to bound token cost on a large document.
 - Only on-request, same trust tier as `search_email`/`read_email_thread` — no autonomous path.
+
+**This build is the actual proof of [[BUG-018]]'s rule, not just a build that should mention it.** BUG-018 was closed (2026-08-01) on the strength of the propose-gate discipline now being a documented, enforced Pre-Build Checklist item — but that rule has so far only ever been applied to cases it was written *from* (email send/forward/delete), not tested against a genuinely new risk category. Attachment reading is that test. If this build ships without the MIME allowlist, without memory-safe parsing libraries, or without treating extracted text as content-not-instructions, that is a direct failure of BUG-018's discipline, not just a shortcoming of this bug alone — flag it as such explicitly if it happens, rather than letting it surface as an apparently-unrelated new finding. The Pre-Build Checklist question this build must actually answer (from `principles.md`, added when BUG-018 closed): "Does this build ingest untrusted external content with any action capability? If so, which gate pattern is used, and why?"
 
 **Touches:**
 `core/tools/email/fetch.py` (new function(s)), `core/agent.py` (new tool), `requirements.txt` (new parsing dependencies), `data-architecture.md`
