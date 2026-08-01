@@ -768,9 +768,22 @@ async def handle_turn(
                     })
 
             elif block.name == "propose_forward_email":
+                fwd_thread_id = block.input.get("thread_id") or None
+                fwd_to = block.input.get("to") or None
+                if not fwd_thread_id or not fwd_to:
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": (
+                            "Missing thread_id or to — both are required to propose a "
+                            "forward. Retry with both set."
+                        ),
+                        "is_error": True,
+                    })
+                    continue
                 proposed_forward_email = {
-                    "thread_id": block.input.get("thread_id", ""),
-                    "to": block.input.get("to", ""),
+                    "thread_id": fwd_thread_id,
+                    "to": fwd_to,
                     "cc": block.input.get("cc") or None,
                     "bcc": block.input.get("bcc") or None,
                     "note": block.input.get("note", ""),

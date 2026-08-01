@@ -42,10 +42,23 @@ def _parse_addr_list(raw: str | None) -> list[tuple[str, str]]:
     """Parse a comma-separated address string via email.utils.getaddresses, which
     correctly handles multiple addresses and quoted display names (unlike a naive
     split). Returns (display_name, address) pairs; entries with no address are
-    dropped (e.g. an empty or malformed string)."""
+    dropped (e.g. an empty or malformed string).
+
+    Normalizes semicolons to commas first (a common non-Gmail separator convention)
+    and strips stray/trailing separators before parsing — found via direct testing
+    that getaddresses() doesn't just mis-parse a semicolon or a bare trailing comma,
+    it silently returns a SINGLE empty result for the ENTIRE string, discarding every
+    valid address alongside the malformed one. Without this normalization, "alice@x.com,
+    bob@x.com;" (two valid addresses plus one trailing semicolon) would silently resolve
+    to zero recipients with no error anywhere — confirmed against the real stdlib before
+    and after this fix."""
     if not raw or not raw.strip():
         return []
-    return [(name, addr) for name, addr in getaddresses([raw]) if addr]
+    normalized = raw.replace(";", ",")
+    normalized = re.sub(r",\s*,+", ",", normalized).strip().strip(",").strip()
+    if not normalized:
+        return []
+    return [(name, addr) for name, addr in getaddresses([normalized]) if addr]
 
 
 def _format_addr_list(pairs: list[tuple[str, str]]) -> str:
