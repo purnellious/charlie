@@ -89,3 +89,11 @@ via /distil when closing a topic. Loaded into Charlie's system prompt alongside 
 - BUG-024 (CC field not read correctly) and BUG-025 ("Sent to None" display bug) logged and open
 
 ---
+
+**Extra Space Storage receipts & email forwarding bugs — 1 August 2026**
+
+- Two Extra Space Storage receipts (Unit 1012 — $1,142.00 and Unit 1072 — $644.00) from 31 July 2026 still need to be manually forwarded to finance@ts.org; Charlie's forwarding tool is broken (BUG-026: can't selectively forward within a grouped thread; BUG-027: forward constructs a fresh email rather than a true forward, corrupting formatting and thread context)
+- Ameena Chopdat email re: 2026 CIPC AR & BO submissions (due August 2026) for MyMonero, Monero Distribution Co, and DUST Technologies is pending — financial data sits with Zaheer (CFO), not Jonathan
+- Reminder set for Tuesday morning: if Zaheer hasn't responded to Ameena by close of business Monday, prompt Jonathan to follow up
+
+---
