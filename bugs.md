@@ -531,6 +531,7 @@ When BUG-014 was logged (2026-07-29) its `Topic ID` field was set to the literal
 **Blocks anything current:** No
 **Rough effort:** Medium
 **Logged:** 2026-07-31
+**Topic ID:** 2351
 
 **Problem:**
 Charlie can only compose new emails. There's no way to forward an existing email with its original headers, inline content, and attachments preserved — which is the standard way Jonathan routes receipts and invoices to finance@ts.org.
