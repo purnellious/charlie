@@ -721,6 +721,7 @@ TBD — likely a new small test-harness script/doc, plus a cadence note added to
 **Blocks anything current:** No
 **Rough effort:** Medium
 **Logged:** 2026-08-01
+**Topic ID:** 2531
 
 **Problem:**
 read_email_thread consistently fails to return the most recent message(s) in a thread. Observed twice in the same conversation with thread 19ed5cca3178e967: (1) after a new email arrived today about mice/permit, read_email_thread still reported the June 17 message as the latest; (2) after Erika replied to Jonathan's thank you mentioning humidity and buckling floors, read_email_thread again failed to surface that message. Charlie drafted and reasoned based on stale content as a result.
