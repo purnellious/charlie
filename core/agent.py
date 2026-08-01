@@ -333,24 +333,54 @@ TOOLS = [
     {
         "name": "propose_send_email",
         "description": (
-            "Propose sending an email. This NEVER sends immediately — Jonathan is shown the "
-            "exact recipient, subject, and body, and it is only sent if he replies with the "
-            "literal phrase 'send it' in a separate message. Only call this when Jonathan has "
-            "explicitly asked you to draft or send something — never proactively, and never "
-            "assume success just because you called this tool. Use thread_id (from "
+            "Propose sending, replying to, replying-all to, or CC/BCC'ing an email. This "
+            "NEVER sends immediately — Jonathan is shown the exact resolved recipients, "
+            "subject, and body, and it is only sent if he replies with the literal phrase "
+            "'send it' in a separate message. Only call this when Jonathan has explicitly "
+            "asked you to draft or send something — never proactively, and never assume "
+            "success just because you called this tool. Use thread_id (from "
             "search_email/read_email_thread/a digest line) to reply within an existing "
-            "conversation, properly threaded in Gmail — omit it to compose a fresh email."
+            "conversation, properly threaded in Gmail — omit it to compose a fresh email. "
+            "Omit `to` while thread_id is set to reply to the original sender instead of "
+            "specifying an address. Set reply_all: true (only meaningful with thread_id) to "
+            "also include everyone from the original message's To/Cc, excluding Jonathan "
+            "himself."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "to": {"type": "string", "description": "Recipient email address."},
+                "to": {"type": "string", "description": "Recipient email address. Omit only when thread_id is set — this replies to the original sender."},
                 "subject": {"type": "string", "description": "Subject line — ignored if thread_id is set, since the thread's own subject is used."},
                 "body": {"type": "string", "description": "Full email body text."},
-                "thread_id": {"type": "string", "description": "Optional — reply within this thread instead of composing fresh."},
+                "thread_id": {"type": "string", "description": "Optional — reply within this thread instead of composing fresh. Required if `to` is omitted."},
+                "cc": {"type": "string", "description": "Optional comma-separated CC address(es)."},
+                "bcc": {"type": "string", "description": "Optional comma-separated BCC address(es)."},
+                "reply_all": {"type": "boolean", "description": "Only meaningful with thread_id — CC everyone from the original message's To/Cc (excluding Jonathan), merged with any explicit cc."},
                 "reason": {"type": "string", "description": "Brief context for the preview, e.g. what Jonathan asked for."},
             },
-            "required": ["to", "body", "reason"],
+            "required": ["body", "reason"],
+        },
+    },
+    {
+        "name": "propose_forward_email",
+        "description": (
+            "Propose forwarding an email thread's most recent message, including its "
+            "attachments, to one or more addresses. This NEVER sends immediately — "
+            "Jonathan is shown the sender, subject, message count, and attachment list, "
+            "and it is only forwarded if he replies with the literal phrase 'forward it' "
+            "in a separate message. Only call this when Jonathan has explicitly asked."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "thread_id": {"type": "string", "description": "Gmail thread_id whose most recent message will be forwarded."},
+                "to": {"type": "string", "description": "Recipient email address."},
+                "cc": {"type": "string", "description": "Optional comma-separated CC address(es)."},
+                "bcc": {"type": "string", "description": "Optional comma-separated BCC address(es)."},
+                "note": {"type": "string", "description": "Optional note to include above the forwarded content."},
+                "reason": {"type": "string", "description": "Brief context, e.g. what Jonathan asked for."},
+            },
+            "required": ["thread_id", "to", "reason"],
         },
     },
     {
@@ -486,15 +516,17 @@ this whenever he asks about a specific email, sender, or topic in his inbox
 - **read_email_thread** — fetch the full content of an email thread by thread_id (from a \
 search_email result or an Email topic digest); use when he wants the actual content, not just a summary
 - **archive_email** / **mark_email_read** / **mark_email_unread** — act on an email thread by \
-thread_id, only when Jonathan explicitly asks. Self-mailbox actions only — never send, reply, \
-forward, or delete anything (no such capability exists)
+thread_id, only when Jonathan explicitly asks. These execute immediately (reversible, \
+self-mailbox actions only) — sending, replying, forwarding, and deleting all go through a \
+separate propose-then-confirm gate instead, described below.
 - **propose_email_prefs_update** — propose an update to your persistent understanding of how \
 Jonathan wants email handled (email-preferences.md). He will review before it's saved.
-- **propose_send_email** / **propose_delete_email** — propose sending or deleting an email. \
-Neither ever executes immediately — each only fires if Jonathan replies with the exact literal \
-phrase ("send it" / "delete it") in a separate message. Never call these proactively, and never \
-tell Jonathan something was sent or deleted unless he has actually confirmed and you've seen \
-the result — these are proposals, not actions.
+- **propose_send_email** / **propose_forward_email** / **propose_delete_email** — propose \
+sending, replying, replying-all, CC/BCC'ing, forwarding, or deleting an email. None of these \
+ever execute immediately — each only fires if Jonathan replies with the exact literal phrase \
+("send it" / "forward it" / "delete it") in a separate message. Never call these proactively, \
+and never tell Jonathan something was sent, forwarded, or deleted unless he has actually \
+confirmed and you've seen the result — these are proposals, not actions.
 
 **Capabilities boundary:** You run exclusively on Jonathan's always-on Mac (10.0.0.119). \
 You cannot directly access or execute anything on his main Mac. If Jonathan asks you to do \
@@ -579,8 +611,9 @@ async def handle_turn(
     Returns:
         (updated_messages, proposals)
         proposals is {"charlie_doc": dict | None, "email_prefs": dict | None,
-        "send_email": dict | None, "delete_email": dict | None} — each None unless
-        the corresponding propose_* tool was called this turn.
+        "send_email": dict | None, "delete_email": dict | None,
+        "forward_email": dict | None} — each None unless the corresponding propose_*
+        tool was called this turn.
     """
     from core.tools.claude_code import run as run_claude_code
     from core.tools.restart import trigger_restart
@@ -591,6 +624,7 @@ async def handle_turn(
     proposed_email_prefs = None
     proposed_send_email = None
     proposed_delete_email = None
+    proposed_forward_email = None
     # tool_result dicts (by reference — mutating these later also updates `messages`,
     # since they're the same objects) whose raw content must be scrubbed before this
     # function returns, so it never persists to charlie.db (see core/history.py's
@@ -704,17 +738,48 @@ async def handle_turn(
                 })
 
             elif block.name == "propose_send_email":
-                proposed_send_email = {
+                to = block.input.get("to") or None
+                thread_id = block.input.get("thread_id") or None
+                if not to and not thread_id:
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": (
+                            "Missing recipient — provide 'to', or 'thread_id' to reply to "
+                            "the original sender. Retry with one of these set."
+                        ),
+                        "is_error": True,
+                    })
+                else:
+                    proposed_send_email = {
+                        "to": to,
+                        "subject": block.input.get("subject", ""),
+                        "body": block.input.get("body", ""),
+                        "thread_id": thread_id,
+                        "cc": block.input.get("cc") or None,
+                        "bcc": block.input.get("bcc") or None,
+                        "reply_all": block.input.get("reply_all", False),
+                        "reason": block.input.get("reason", ""),
+                    }
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": "Send proposed. It will only send if Jonathan replies 'send it'.",
+                    })
+
+            elif block.name == "propose_forward_email":
+                proposed_forward_email = {
+                    "thread_id": block.input.get("thread_id", ""),
                     "to": block.input.get("to", ""),
-                    "subject": block.input.get("subject", ""),
-                    "body": block.input.get("body", ""),
-                    "thread_id": block.input.get("thread_id") or None,
+                    "cc": block.input.get("cc") or None,
+                    "bcc": block.input.get("bcc") or None,
+                    "note": block.input.get("note", ""),
                     "reason": block.input.get("reason", ""),
                 }
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
-                    "content": "Send proposed. It will only send if Jonathan replies 'send it'.",
+                    "content": "Forward proposed. It will only forward if Jonathan replies 'forward it'.",
                 })
 
             elif block.name == "propose_delete_email":
@@ -920,6 +985,7 @@ async def handle_turn(
         "email_prefs": proposed_email_prefs,
         "send_email": proposed_send_email,
         "delete_email": proposed_delete_email,
+        "forward_email": proposed_forward_email,
     }
 
 

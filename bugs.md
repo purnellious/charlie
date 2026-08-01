@@ -439,6 +439,8 @@ The real mitigation is structural, not verbal: consequential actions must requir
 **Problem:**
 `search_email`, `read_email_thread`, `archive_email`, `mark_email_read`, `mark_email_unread` (all dispatched inside `handle_turn()`'s tool loop) and now the send/delete execution in `bot.py`'s `on_message()` all call synchronous `googleapiclient` methods directly from async functions, with no `asyncio.to_thread`/executor wrapping — unlike the background poller (`poll_and_notify`), which deliberately wraps its sync Gmail+Haiku pipeline this way specifically to avoid blocking the bot's event loop. Every Gmail-calling tool in the interactive conversation path currently blocks the whole bot (all topics, not just the one making the call) for the duration of that HTTP round-trip.
 
+**Update (2026-08-01, BUG-023):** two more unwrapped call sites landed with the reply/reply-all/forward build — `forward_email()`/`get_forward_preview()`'s dispatch in `bot.py`'s `on_message()` (`"forward it"` handler), plus `resolve_send_recipients()`'s thread lookup called from `_send_email_proposal_text()`/`_forward_email_proposal_text()` at proposal-preview time. Forward's attachment downloads are a meaningfully larger payload than any existing call site here, so this debt item is more consequential than it was before, not just wider. Still not fixed in this build — deliberately out of scope, tracked here rather than accreting silently.
+
 **What needs fixing:**
 Wrap each direct Gmail API call site in `asyncio.to_thread(...)`, consistent with the already-proven pattern in `poll_and_notify`. Not urgent — round-trips are typically sub-second, and this has been true since `search_email`/`read_email_thread` shipped without complaint — but worth fixing in one pass across all the call sites rather than accreting more un-wrapped call sites with each new email tool.
 
@@ -525,13 +527,14 @@ When BUG-014 was logged (2026-07-29) its `Topic ID` field was set to the literal
 
 ## BUG-023 — Charlie can't forward emails (no true forward capability)
 **Type:** Debt
-**Status:** Open
+**Status:** Closed
 **Priority:** Medium
 **Severity:** Medium — workaround is composing a new email, but attachments and original headers are lost
 **Blocks anything current:** No
 **Rough effort:** Medium
 **Logged:** 2026-07-31
 **Topic ID:** 2351
+**Resolved:** 2026-08-01
 
 **Problem:**
 Charlie can only compose new emails. There's no way to forward an existing email with its original headers, inline content, and attachments preserved — which is the standard way Jonathan routes receipts and invoices to finance@ts.org.
@@ -539,7 +542,23 @@ Charlie can only compose new emails. There's no way to forward an existing email
 **What needs fixing:**
 Add a forward_email tool that uses the Gmail API to forward an existing thread/message to a specified address, preserving original headers and attachments. Needs the same propose-then-confirm gate as send_email.
 
+**Resolved:** 2026-08-01 — while scoping this, Jonathan also asked for the fuller set of missing mail-manipulation abilities: CC/BCC, reply (auto-addressed to the original sender), and reply-all. Built all of it together as one Tier-3 change, all riding the existing propose-then-distinct-reply-phrase gate (no new confirmation pattern needed):
+
+- `send_email()` (`core/tools/email/fetch.py`) extended: `to` is now optional when `thread_id` is given (omitting it replies to the original sender); new `cc`/`bcc`/`reply_all` params. Reply-all merges the original message's To+Cc into `cc`, minus Jonathan's own address and the resolved recipient — self-exclusion applies only to that auto-derived portion, so an explicit "cc me" survives. Addresses are parsed via `email.utils.getaddresses` (handles multi-address/quoted-name lists correctly) and deduplicated by lowercased address after merging auto-derived and explicit recipients.
+- New `resolve_send_recipients()` is the single implementation of this derivation — `send_email()` calls it at actual-send time, and `bot.py`'s proposal-text builder calls the identical function to render the preview Jonathan confirms. This was a real gap in the initial design (a draft plan had the preview and the actual send each computing recipients independently, which risked exactly the preview/action divergence this whole gate exists to prevent) — caught and fixed before implementation, not after.
+- `get_thread_summary()`'s fetched headers extended to include `To`/`Cc` (needed for reply-all's derivation).
+- Header-injection guard (rejects `\r`/`\n`) extended from `to`/`subject` to `cc`, `bcc`, and the auto-filled reply subject (a pre-existing latent gap — the reply subject comes from the original message, previously unchecked).
+- New `forward_email()`/`get_forward_preview()`: forwards a thread's most recent message, including attachments (fetched via `messages().attachments().get()`, byte-identical to the original), as a brand-new message (no `threadId`/`References` — the new recipient isn't part of the original conversation). Rejects control characters in to/cc/bcc/subject and in each attachment filename (a new risk: filenames come from the *original* sender, reachable via arbitrary inbound mail). Total attachment size capped at 20MB (`MAX_FORWARD_ATTACHMENT_BYTES`), checked from metadata before downloading anything; if any single attachment fails to fetch, the whole forward fails rather than sending with one silently missing.
+- `propose_send_email` schema extended (optional `to`, new `cc`/`bcc`/`reply_all`); its dispatch in `agent.py` now validates up front (neither `to` nor `thread_id` present → clean tool-level error, no pending proposal built) rather than only failing at send time with a broken preview.
+- New `propose_forward_email` tool + a new `PENDING_FORWARD_EMAIL` gate in `bot.py` (`"forward it"`/`"cancel"`), mirroring send/delete exactly — wired into `_other_pending_note`, both proposal-dispatch sites (`_run_charlie_turn` and `on_meta_command`), and a new `_forward_email_proposal_text()` builder (sender/subject/message-count/attachments/cc/bcc/note).
+- **Critical fix:** the existing "send it" dispatch in `bot.py` (`on_message()`) previously called `send_email()` without `cc`/`bcc`/`reply_all` — extending the schema without fixing this exact call would have meant Jonathan approving a preview with real CC/reply-all recipients while the actual send silently dropped them. Fixed to pass all three through from the pending proposal.
+- Long reply-all previews (a large derived Cc list) are chunked via a new `send_and_save_chunked()` helper, matching the existing `_send_chunks`/`_chunks`/`on_meta_command` chunking pattern, so Telegram's message-length limit doesn't silently truncate a preview.
+- System prompt in `agent.py` updated: the capabilities-boundary line ("never send, reply, forward, or delete anything — no such capability exists") was already stale before this build (send/delete existed) and is now corrected; `propose_forward_email` folded into the existing "never call proactively" reinforcement alongside `propose_send_email`/`propose_delete_email`. `core/tools/email/__init__.py`'s equally-stale module docstring fixed too.
+- No new OAuth scope needed — `gmail.modify` already covers everything here.
+
+**Code review found and fixed 1 more issue:** `get_forward_preview()`'s attachment walk only recognized attachments referenced via Gmail's `attachmentId` (a separate fetch call) — Gmail's `format=full` response can also inline a small attachment's bytes directly as `body.data` on the part itself, with no `attachmentId`. The original version would have silently dropped such an attachment from the forward with no error and no visible sign anything was missing. Fixed to recognize and forward both representations (verified locally: an inline-`body.data` attachment forwards byte-identical, without an unnecessary `attachments().get()` call).
+
 **Touches:**
-TBD
+`core/tools/email/fetch.py`, `core/agent.py`, `core/bot.py`, `core/tools/email/__init__.py`, `bugs.md`, `data-architecture.md`, `devlog.md`.
 
 ---

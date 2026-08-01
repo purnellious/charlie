@@ -2,8 +2,9 @@
 Email monitor tool — polls Jonathan's inbox, triages each new message with
 Claude Haiku, and pushes one batched Telegram digest per poll. gmail.modify
 scope — supports archive/mark-read/mark-unread (on-request only, no
-autonomous use). No send, reply, forward, or delete capability exists
-anywhere in this tool.
+autonomous use). Send/reply/reply-all/forward/delete also exist (in
+core/tools/email/fetch.py), gated behind a propose-then-confirm flow in
+core/agent.py and core/bot.py — none of that is autonomous either.
 """
 import asyncio
 import logging
