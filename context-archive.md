@@ -80,3 +80,12 @@ via /distil when closing a topic. Loaded into Charlie's system prompt alongside 
 - Moar Labs $50k investment unblocked (both accounts now open)
 
 ---
+
+**Email workflow & preferences — 31 July 2026**
+
+- Jonathan forwards invoices/receipts to finance@ts.org as a matter of course; now that forward capability is live (BUG-023 resolved), Charlie should handle these
+- Email drafting style confirmed: no comma after greeting, plain language, sign off "Kind regards," / new line "Jonathan", use "Hi everyone" / "Hi you two" / "Hi [Name] and [Name]" — not "Hi both"
+- Two open items: (1) Verify tomorrow that the Extra Space Storage receipt forward to finance@ts.org actually sent (flagged as uncertain); (2) Ameena Chopdat (#19) still needs a response with income data for MyMonero, Monero Distribution Co, and DUST Technologies (CIPC annual return, due August 2026)
+- BUG-024 (CC field not read correctly) and BUG-025 ("Sent to None" display bug) logged and open
+
+---
