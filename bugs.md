@@ -631,3 +631,23 @@ Add the ability to specify a particular message within a thread to forward, rath
 TBD
 
 ---
+
+## BUG-027 — forward_email sends a fresh email instead of a proper forward
+**Type:** Bug
+**Status:** Open
+**Priority:** High
+**Severity:** High — forwarded emails arrive as fresh plain-text messages, losing original formatting, attachments, and thread context entirely
+**Blocks anything current:** No
+**Rough effort:** Medium
+**Logged:** 2026-08-01
+
+**Problem:**
+propose_forward_email/forward_email does not produce a proper email forward. Instead of forwarding the original message with its headers, formatting, and attachments intact (as a real "Fwd:"), it constructs a fresh email with only the note text. The result doesn't group with other forwarded receipts in the recipient's inbox and the original email content/formatting is completely lost.
+
+**What needs fixing:**
+Rework forward_email to construct a proper MIME forward — the original message should be attached or inlined as a forwarded message (RFC 2822 compliant), with original headers (From, Date, Subject, To) included in the forward body, and original attachments re-attached. The result should look identical to hitting "Forward" in a real email client.
+
+**Touches:**
+TBD
+
+---
