@@ -49,6 +49,11 @@ PENDING_SEND_EMAIL: dict[int, dict] = {}
 # ("delete it"), not "approve".
 PENDING_DELETE_EMAIL: dict[int, dict] = {}
 
+# Pending forward-email proposals — keyed by topic_id. Distinct confirm phrase
+# ("forward it"), same reasoning as send/delete — a third-party-contact action gets its
+# own unambiguous trigger.
+PENDING_FORWARD_EMAIL: dict[int, dict] = {}
+
 # Pending distillation proposals — keyed by topic_id
 # Value: {"distillate": str} or {"distillate": "NOTHING_TO_KEEP"}
 PENDING_DISTIL: dict[int, dict] = {}
@@ -65,6 +70,15 @@ async def send_and_save(bot, topic_id: int, text: str):
         message_thread_id=topic_id,
     )
     save_message(topic_id, "assistant", text)
+
+
+async def send_and_save_chunked(bot, topic_id: int, text: str, chunk_size: int = 4000):
+    """Same as send_and_save, but split across multiple messages if text exceeds
+    chunk_size — same shape as on_meta_command's review-chunking loop. A reply-all
+    preview's resolved Cc list can run long enough to need this, unlike the other,
+    length-capped proposal previews."""
+    for i in range(0, len(text), chunk_size):
+        await send_and_save(bot, topic_id, text[i:i + chunk_size])
 
 
 def _other_pending_note(topic_id: int, just_resolved: str) -> str:
@@ -87,6 +101,8 @@ def _other_pending_note(topic_id: int, just_resolved: str) -> str:
         notes.append("a pending email to send — reply 'send it' or 'cancel'")
     if just_resolved != "delete_email" and topic_id in PENDING_DELETE_EMAIL:
         notes.append("a pending email delete — reply 'delete it' or 'cancel'")
+    if just_resolved != "forward_email" and topic_id in PENDING_FORWARD_EMAIL:
+        notes.append("a pending email forward — reply 'forward it' or 'cancel'")
     if not notes:
         return ""
     return "\n\n" + "\n".join(f"You also still have {n}." for n in notes)
@@ -186,6 +202,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 send_email(
                     to=pending["to"], subject=pending["subject"],
                     body=pending["body"], thread_id=pending["thread_id"],
+                    cc=pending.get("cc"), bcc=pending.get("bcc"),
+                    reply_all=pending.get("reply_all", False),
                 )
                 await send_and_save(context.bot, topic_id, f"Sent to {pending['to']}." + _other_pending_note(topic_id, "send_email"))
             except Exception as e:
@@ -216,6 +234,29 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_and_save(context.bot, topic_id, "Delete cancelled." + _other_pending_note(topic_id, "delete_email"))
             return
 
+    # Handle forward-it/cancel for pending forward-email proposals. Distinct confirm
+    # phrase ("forward it"), same reasoning as send/delete.
+    if topic_id in PENDING_FORWARD_EMAIL:
+        response_lower = user_text.strip().lower()
+        if response_lower == "forward it":
+            pending = PENDING_FORWARD_EMAIL.pop(topic_id)
+            try:
+                from core.tools.email.fetch import forward_email
+                forward_email(
+                    thread_id=pending["thread_id"], to=pending["to"],
+                    cc=pending.get("cc"), bcc=pending.get("bcc"),
+                    note=pending.get("note", ""),
+                )
+                await send_and_save(context.bot, topic_id, f"Forwarded to {pending['to']}." + _other_pending_note(topic_id, "forward_email"))
+            except Exception as e:
+                log.error(f"Forward failed for topic {topic_id}: {e}")
+                await send_and_save(context.bot, topic_id, f"Forward failed: {e}" + _other_pending_note(topic_id, "forward_email"))
+            return
+        elif response_lower in ("cancel", "no", "stop", "discard"):
+            PENDING_FORWARD_EMAIL.pop(topic_id)
+            await send_and_save(context.bot, topic_id, "Forward cancelled." + _other_pending_note(topic_id, "forward_email"))
+            return
+
     # Prevent overlapping turns in the same topic
     if topic_id in ACTIVE_TOPICS:
         await context.bot.send_message(
@@ -233,27 +274,80 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def _send_email_proposal_text(p: dict) -> str:
+    # Grounds the preview in the real resolved recipients/subject rather than the model's
+    # guess — resolve_send_recipients() is the SAME function send_email() calls at actual
+    # send time, so this preview and the real send can never diverge.
+    from email.utils import getaddresses
+    from core.tools.email.fetch import resolve_send_recipients
+    try:
+        resolved = resolve_send_recipients(
+            p.get("thread_id"), p.get("to"), p.get("subject", ""),
+            p.get("cc"), p.get("bcc"), p.get("reply_all", False),
+        )
+        to_display = resolved["to"]
+        subject_display = resolved["subject"]
+        cc_display = resolved["cc"]
+        bcc_display = resolved["bcc"]
+        error_note = ""
+    except Exception as e:
+        to_display = p.get("to") or "(unresolved)"
+        subject_display = p.get("subject", "")
+        cc_display = p.get("cc") or ""
+        bcc_display = p.get("bcc") or ""
+        error_note = f"\n\n(Could not resolve recipients: {e})"
+
     thread_note = " (reply within existing thread)" if p.get("thread_id") else " (new email)"
-    if p.get("thread_id"):
-        # Grounds the preview in a real, freshly-fetched thread subject rather than the
-        # model's guess — same reasoning as _delete_email_proposal_text below — and mirrors
-        # the exact "Re: " prefix logic send_email() itself will apply at send time.
-        try:
-            from core.tools.email.fetch import get_thread_summary
-            orig_subject = get_thread_summary(p["thread_id"])["subject"]
-            subject_display = orig_subject if orig_subject.strip().lower().startswith("re:") else f"Re: {orig_subject}"
-        except Exception as e:
-            subject_display = f"(could not fetch thread subject: {e})"
-    else:
-        subject_display = p['subject']
-    return (
-        f"Proposed email to send{thread_note}\n\n"
-        f"To: {p['to']}\n"
-        f"Subject: {subject_display}\n\n"
-        f"{p['body']}\n\n"
-        f"Reason: {p['reason']}\n\n"
-        f"Reply 'send it' to send, or 'cancel' to discard."
-    )
+    lines = [f"Proposed email to send{thread_note}", "", f"To: {to_display}"]
+    if cc_display:
+        cc_count = len([a for _, a in getaddresses([cc_display]) if a])
+        count_note = f" — {cc_count} recipient{'s' if cc_count != 1 else ''}" if p.get("reply_all") else ""
+        lines.append(f"Cc: {cc_display}{count_note}")
+    if bcc_display:
+        lines.append(f"Bcc: {bcc_display}")
+    lines += [
+        f"Subject: {subject_display}", "",
+        p.get("body", ""), "",
+        f"Reason: {p.get('reason', '')}", "",
+        "Reply 'send it' to send, or 'cancel' to discard.",
+    ]
+    return "\n".join(lines) + error_note
+
+
+def _forward_email_proposal_text(p: dict) -> str:
+    # Grounds the preview in real, freshly-fetched sender/subject/attachment metadata
+    # rather than the model's paraphrase — same reasoning as _delete_email_proposal_text.
+    try:
+        from core.tools.email.fetch import get_forward_preview
+        preview = get_forward_preview(p["thread_id"])
+        count_note = (
+            f" (most recent of {preview['message_count']} messages in this thread)"
+            if preview["message_count"] > 1 else ""
+        )
+        if preview["attachments"]:
+            att_lines = "\n".join(
+                f"  - {a['filename']} ({a['mime_type']}, {a['size']} bytes)"
+                for a in preview["attachments"]
+            )
+            att_block = f"Attachments:\n{att_lines}"
+        else:
+            att_block = "Attachments: none"
+        target = (
+            f"From: {preview['sender_name']} <{preview['sender_email']}>\n"
+            f"Subject: {preview['subject']}{count_note}\n"
+            f"{att_block}"
+        )
+    except Exception as e:
+        target = f"(could not fetch thread details: {e})"
+
+    lines = ["Proposed forward", "", target, "", f"To: {p.get('to', '')}"]
+    if p.get("cc"):
+        lines.append(f"Cc: {p['cc']}")
+    if p.get("bcc"):
+        lines.append(f"Bcc: {p['bcc']}")
+    if p.get("note"):
+        lines += ["", f"Note: {p['note']}"]
+    lines += ["", f"Reason: {p.get('reason', '')}", "", "Reply 'forward it' to forward, or 'cancel' to discard."]
+    return "\n".join(lines)
 
 
 def _delete_email_proposal_text(p: dict) -> str:
@@ -342,13 +436,19 @@ async def _run_charlie_turn(update, context, topic_id: int, user_text: str):
     proposed_send = proposals.get("send_email")
     if proposed_send:
         PENDING_SEND_EMAIL[topic_id] = proposed_send
-        await send_and_save(context.bot, topic_id, _send_email_proposal_text(proposed_send))
+        await send_and_save_chunked(context.bot, topic_id, _send_email_proposal_text(proposed_send))
 
     # Handle a proposed delete
     proposed_delete = proposals.get("delete_email")
     if proposed_delete:
         PENDING_DELETE_EMAIL[topic_id] = proposed_delete
         await send_and_save(context.bot, topic_id, _delete_email_proposal_text(proposed_delete))
+
+    # Handle a proposed forward
+    proposed_forward = proposals.get("forward_email")
+    if proposed_forward:
+        PENDING_FORWARD_EMAIL[topic_id] = proposed_forward
+        await send_and_save_chunked(context.bot, topic_id, _forward_email_proposal_text(proposed_forward))
 
 
 async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -457,12 +557,17 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         proposed_send = proposals.get("send_email")
         if proposed_send:
             PENDING_SEND_EMAIL[topic_id] = proposed_send
-            await send_and_save(context.bot, topic_id, _send_email_proposal_text(proposed_send))
+            await send_and_save_chunked(context.bot, topic_id, _send_email_proposal_text(proposed_send))
 
         proposed_delete = proposals.get("delete_email")
         if proposed_delete:
             PENDING_DELETE_EMAIL[topic_id] = proposed_delete
             await send_and_save(context.bot, topic_id, _delete_email_proposal_text(proposed_delete))
+
+        proposed_forward = proposals.get("forward_email")
+        if proposed_forward:
+            PENDING_FORWARD_EMAIL[topic_id] = proposed_forward
+            await send_and_save_chunked(context.bot, topic_id, _forward_email_proposal_text(proposed_forward))
     except Exception as e:
         log.error(f"Charlie's take failed for topic {topic_id}: {e}")
         await send_and_save(context.bot, topic_id, f"Charlie's take failed: {e}")
