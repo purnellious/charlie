@@ -710,6 +710,7 @@ Also fixed in the same pass: `import html` (for `html.escape`) was added at modu
 **Blocks anything current:** No
 **Rough effort:** Medium — needs a real test harness, not just a one-off exercise
 **Logged:** 2026-08-01
+**Topic ID:** 2552
 
 **Problem:**
 [[BUG-018]]'s resolution absorbed its concrete, closeable items (the propose-gate default rule, the Pre-Build Checklist line) into `principles.md`/`data-architecture.md`. Its one remaining item — "periodic adversarial testing... to confirm gates actually hold, rather than assuming they do" — had no natural completion point, so it's tracked here as its own real, buildable thing instead of a bug that never closes.
