@@ -759,6 +759,7 @@ TBD
 **Blocks anything current:** No
 **Rough effort:** Medium
 **Logged:** 2026-08-04
+**Topic ID:** 2720
 
 **Problem:**
 When Jonathan confirmed batch email deletions with "delete it", the chat showed "Deleted (moved to Trash — recoverable for 30 days)" but a subsequent inbox search confirmed all 7 emails were still present. The deletion confirmations were false positives. Same may apply to earlier individual deletions in this session.
