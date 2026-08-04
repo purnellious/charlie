@@ -750,3 +750,23 @@ TBD
 **Cross-reference, [[BUG-020]]:** `read_email_attachment` (built the same day this bug was logged) defaults to a thread's most recent message via the identical pattern implicated here — `threads().get()`'s message list, sorted by `internalDate`, take the last one (`get_forward_preview`/`get_thread_summary` share this same pattern too, and predate this bug). Shipped anyway rather than held back: the exposure is narrower there (only matters when `gmail_message_id` is omitted, the target attachment is genuinely on the newest message, and that message isn't surfaced — and the tool's own description was just hardened this session to push toward always passing `gmail_message_id` whenever a thread has multiple messages), and whichever fix lands here will apply to `read_email_attachment` automatically, since it's the same underlying fetch. Whoever resolves this bug should verify `read_email_attachment`'s default-message-targeting behavior as part of confirming the fix, not just `read_email_thread`'s digest.
 
 ---
+
+## BUG-030 — Email deletions falsely reported as successful when they didn't execute
+**Type:** Bug
+**Status:** Open
+**Priority:** High
+**Severity:** High — Charlie tells Jonathan emails were deleted when they weren't, giving false confidence
+**Blocks anything current:** No
+**Rough effort:** Medium
+**Logged:** 2026-08-04
+
+**Problem:**
+When Jonathan confirmed batch email deletions with "delete it", the chat showed "Deleted (moved to Trash — recoverable for 30 days)" but a subsequent inbox search confirmed all 7 emails were still present. The deletion confirmations were false positives. Same may apply to earlier individual deletions in this session.
+
+**What needs fixing:**
+Investigate propose_delete_email and the "delete it" confirmation handler in bot.py — determine whether the Gmail API trash call is actually being made, whether errors are being swallowed silently, and whether the confirmation message is being sent before verifying the API call succeeded. Add proper error handling and only report success after a confirmed API response.
+
+**Touches:**
+TBD
+
+---
