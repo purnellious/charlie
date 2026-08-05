@@ -902,3 +902,42 @@ TBD — pending the decision above. Not a "wrap in asyncio.to_thread" fix like B
 **Cross-reference, [[BUG-019]]:** the two bugs came from the same investigation and are complementary — BUG-019 makes individual blocking calls non-blocking; this bug is about whether the bot can process more than one conversation's turn at a time in the first place, which BUG-019's fix alone does not enable.
 
 ---
+
+## BUG-035 — Grant finder silently dropped newsletter opportunities; no eligibility/geography filtering at all
+**Type:** Bug
+**Status:** In Progress — fix implemented, not yet closed (see note below)
+**Priority:** Medium
+**Severity:** High — Jonathan's own description: "frustratingly bad." Real, currently-open grants for Larica were dropped from the weekly digest with zero trace, and separately, opportunities she's flatly ineligible for (wrong region, educator-only) were being sent as if valid
+**Blocks anything current:** No
+**Rough effort:** Large (already done — multi-stage fix, several rounds of live testing against real emails/pages, one `/code-review` pass)
+**Logged:** 2026-08-05
+**Topic ID:** TBD — no Telegram topic yet, logged directly via Claude Code; run /createbugtopics to backfill
+
+**Problem:**
+Jonathan reported the grant finder found zero open grants on Monday (2026-08-03), but newsletters he could see in the inbox looked like they should have surfaced some. Investigation found two independent, compounding root causes, plus (once actually reviewing real recovered opportunities with Jonathan) a third, larger design gap:
+
+1. **Gmail extraction silently failed.** `_extract_grants_from_emails()` asked Claude for a bare JSON array in free text and pulled it out with a `\[.*\]` regex. If the array didn't fully complete — most likely on a newsletter-heavy week, since more source content means more opportunities to describe within the same fixed 2000-token output cap — the regex found no match and the function returned `[]` with **zero logging of any kind**. Confirmed directly: re-running the exact 4 unread newsletters from Monday's run through the same extraction logic found 13 real opportunities with deadlines through October — Claude *can* find them, it just silently failed to that Monday. Compounding this: `poll_gmail_inbox()` marked every fetched message `\Seen` unconditionally, regardless of whether extraction succeeded, so a failed batch's source emails became permanently unrecoverable — the next poll only ever looks at `UNSEEN` mail.
+
+2. **`validate_L3` had no date anchor.** The AI cross-check that decides "is this still open" never told the model what today's date was. Confirmed directly: it rejected a real opportunity with a 2026-10-19 deadline, reasoning "we are currently past this date" — while the actual date was 2026-08-05, over two months earlier. Also confirmed the page-content given to `validate_L3` was truncated to 4000 characters without stripping `<script>`/`<style>` block *contents* (only their tags) — real eligibility text on one page didn't start until character ~17,700 of a ~43,000-character page, so it was never read at all.
+
+3. **No eligibility/geography filtering existed anywhere in the pipeline.** Reviewing the recovered opportunities with Jonathan surfaced that "Open Calls" was explicitly categorised as "any geography" with nothing anywhere actually checking whether Larica (Jersey City, NJ) was eligible — a Portland, OR-restricted open call and an educator-only award both sailed through as if valid. Separately, Jonathan asked for eligibility restrictions/priorities to be surfaced prominently in the write-up rather than buried or omitted (a real example: an Erie Canal residency's priority for artists with Haudenosaunee Confederacy/Mohican Nation ties), and for the write-up to include sought mediums and a one-line theme/purpose — none of which existed before.
+
+**Fix implemented, 2026-08-05 (not yet closed):**
+- `_extract_grants_from_emails` and `validate_L3` both moved to forced tool-use (a JSON-schema-validated tool call) instead of free-text-plus-regex, guaranteeing structurally valid output whenever generation completes, with every failure path (API error, `stop_reason == "max_tokens"`, missing tool call) now logged specifically via a new shared `_forced_tool_call()` helper.
+- `poll_gmail_inbox` only marks a message `\Seen` once its content was either successfully extracted as part of a successful batch, or had no usable body in the first place (nothing lost either way) — a failed batch now leaves its source emails unread so they're retried on the next poll instead of vanishing permanently.
+- `validate_L3` now states today's actual date explicitly, anchored to the app's configured `TIMEZONE` (via a new `_today()` helper) rather than `date.today()`'s implicit OS-local behaviour — also applied to `validate_L2`, which had the same latent issue.
+- `validate_L3` now checks eligibility against a hardcoded `_ARTIST_PROFILE` (visual artist, not an educator/curator/student, based in Jersey City NJ, not restricted to one medium) — rejects genuine geographic/role exclusions, but explicitly does NOT reject for a stated priority/preference toward another group (surfaces it instead) or for a medium-specific opportunity/medium uncertainty (also surfaced, never disqualifying).
+- New `Opportunity` fields — `eligibility_notes`, `mediums`, `theme_summary` — populated by `validate_L3`, persisted to `grants.db` (with an `ALTER TABLE` migration for the pre-existing DB), and shown in the email (`eligibility_notes` as a prominent callout right after the title, before the general description).
+- `_html_to_text` now strips `<script>`/`<style>` block contents, and `validate_L3`'s page-content budget was raised 4000 → 12000 chars.
+- "Open Calls"'s "any geography" language removed from both `categorize()`'s prompt and the email's category subtitle, since geography is now actually filtered upstream.
+
+A `/code-review` pass (high effort) on this found and fixed 4 further real issues before deployment: `mail.logout()` sat inside the same broad `except` that returns `[]` on failure, so a logout error after a *successful* extraction would have discarded already-extracted opportunities whose source emails were already marked `\Seen` — moved into its own `finally`-guarded block that can't clobber the return value; messages with too-short bodies to extract from were never being marked `\Seen` at all (only content-bearing ones were considered), risking them piling up and crowding out genuinely new mail in the 20-message-per-poll window — now split into `content_nums` (seen only on success) vs `empty_nums` (seen unconditionally, nothing to lose); a stale prompt string still claimed "4000 chars" after the truncation was raised to 12000; and the forced-tool-use validation logic was duplicated near-verbatim between the two call sites — extracted into the shared `_forced_tool_call()` helper mentioned above.
+
+Every fix was verified against real, live data, not mocks: the exact 4 originally-missed emails, the exact opportunities Jonathan gave feedback on by name (Queer Spirit correctly rejected for its Portland, OR restriction; Liu Shiming correctly rejected for being educator-only; Erie Canal correctly verified with its Haudenosaunee Confederacy/Mohican Nation priority now surfaced verbatim; Exclaim!'s theme write-up landing almost word-for-word on Jonathan's own example phrasing; the sculpture-specific grants no longer incorrectly rejected for medium uncertainty), a direct API probe confirming `stop_reason == "max_tokens"` is detected correctly, and a live end-to-end run that caught 3 more genuinely new newsletters, extracted 9 opportunities, and correctly resolved down to 1 real, currently-open one after full validation.
+
+**Deliberately left open:** per this log's standard, live-tested-by-me is not the same as Jonathan confirming the digest itself reads well and the judgment calls (what gets surfaced vs. rejected) match what he actually wants once he's seen a real weekly run land in his inbox naturally, not one triggered by Claude Code mid-investigation.
+
+**Touches:**
+`core/tools/grants.py` (`_extract_grants_from_emails`, `poll_gmail_inbox`, `validate_L2`, `validate_L3`, `_html_to_text`, `Opportunity`, `init_db`, `_mark_seen`, new `_today`/`_forced_tool_call`/`_ARTIST_PROFILE`/`_L3_TOOL`), `core/tools/grants_email.py` (email template, category subtitle)
+
+---

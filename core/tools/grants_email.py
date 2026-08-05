@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 _CATEGORIES = [
     ("Local / Municipal", "📍 Local / Municipal",        "Jersey City, Hudson County, and nearby municipal programmes"),
     ("State-level",       "🏛️ State-level (New Jersey)", "New Jersey state-wide grant programmes"),
-    ("Open Calls",        "🎭 Open Calls",                "Exhibitions, residencies, and juried shows — any geography"),
+    ("Open Calls",        "🎭 Open Calls",                "Exhibitions, residencies, and juried shows"),
     ("National Grants",   "🌎 National Grants",           "Open to US artists nationally"),
 ]
 
@@ -93,17 +93,38 @@ def format_grants_email(opportunities: list) -> tuple:
             apply_url = opp.get("apply_link") or opp.get("url") or "#"
             title = opp.get("title", "")
             description = opp.get("description", "")
+            eligibility_notes = opp.get("eligibility_notes") or ""
+            mediums = opp.get("mediums") or ""
+            theme_summary = opp.get("theme_summary") or ""
 
-            h.append(
+            body = [
                 '<div style="margin-bottom: 28px; padding: 16px 18px; '
                 'background: #f7f7f7; border-radius: 4px;">'
                 f'<p style="margin: 0 0 4px;"><strong>{_esc(title)}</strong>'
                 f' &mdash; <span style="color: #555; font-size: 13px;">{_esc(dl)}</span></p>'
-                f'<p style="margin: 8px 0;">{_esc(description)}</p>'
+            ]
+            # Eligibility notes go right after the title, before anything else — a
+            # restriction/priority worth knowing up front shouldn't be buried below the
+            # general description.
+            if eligibility_notes:
+                body.append(
+                    f'<p style="margin: 6px 0; color: #8a5a00; font-size: 13px;">'
+                    f'&#9888; {_esc(eligibility_notes)}</p>'
+                )
+            if theme_summary:
+                body.append(f'<p style="margin: 8px 0;">{_esc(theme_summary)}</p>')
+            if mediums:
+                body.append(
+                    f'<p style="margin: 4px 0; color: #666; font-size: 12px;">'
+                    f'Mediums: {_esc(mediums)}</p>'
+                )
+            body.append(f'<p style="margin: 8px 0;">{_esc(description)}</p>')
+            body.append(
                 f'<p style="margin: 8px 0 0;"><a href="{_esc(apply_url)}" '
                 'style="color: #1a73e8; text-decoration: none;">Apply here →</a></p>'
                 '</div>'
             )
+            h.append("".join(body))
 
     if not has_content:
         h.append("<p>No new opportunities were found this week. The pipeline ran successfully.</p>")

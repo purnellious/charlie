@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import anthropic
 import requests
@@ -25,6 +26,17 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env")
 
 log = logging.getLogger(__name__)
+
+
+def _today() -> date:
+    """
+    "Today" in the app's configured TIMEZONE (scheduler.py's own env var, default UTC),
+    not whatever timezone the host OS happens to be set to — date.today() would silently
+    anchor deadline checks to the wrong day on a server in a different timezone, exactly
+    the "is this actually still open" mistake validate_L3's date-anchoring fix exists to
+    prevent, just one level removed.
+    """
+    return datetime.now(ZoneInfo(os.getenv("TIMEZONE", "UTC"))).date()
 
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "grants.db"
 MODEL = "claude-haiku-4-5-20251001"
@@ -46,6 +58,10 @@ class Opportunity:
     source: str         # e.g. "CaFÉ", "NJSCA", "JCAC", "Gmail"
     category: Optional[str] = None
     flagged: bool = False
+    # Populated by validate_L3 from the live source page — empty until then.
+    eligibility_notes: str = ""  # a restriction/priority worth surfacing upfront (may be empty)
+    mediums: str = ""            # e.g. "painting, sculpture" or "All media"
+    theme_summary: str = ""      # one-line theme/purpose of the call
     flag_reason: str = ""
 
 
@@ -66,18 +82,26 @@ def init_db():
         conn.execute("DROP TABLE IF EXISTS seen_grants")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS opportunities (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                url         TEXT    NOT NULL UNIQUE,
-                title       TEXT    NOT NULL,
-                deadline    TEXT,
-                source      TEXT,
-                category    TEXT,
-                description TEXT,
-                apply_link  TEXT,
-                first_seen  TEXT    NOT NULL DEFAULT (date('now')),
-                last_seen   TEXT    NOT NULL DEFAULT (date('now'))
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                url               TEXT    NOT NULL UNIQUE,
+                title             TEXT    NOT NULL,
+                deadline          TEXT,
+                source            TEXT,
+                category          TEXT,
+                description       TEXT,
+                apply_link        TEXT,
+                eligibility_notes TEXT,
+                mediums           TEXT,
+                theme_summary     TEXT,
+                first_seen        TEXT    NOT NULL DEFAULT (date('now')),
+                last_seen         TEXT    NOT NULL DEFAULT (date('now'))
             )
         """)
+        # Migrate DBs created before eligibility_notes/mediums/theme_summary existed.
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(opportunities)")}
+        for col in ("eligibility_notes", "mediums", "theme_summary"):
+            if col not in existing_cols:
+                conn.execute(f"ALTER TABLE opportunities ADD COLUMN {col} TEXT")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS flagged (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,17 +123,21 @@ def _is_seen(url: str) -> bool:
 def _mark_seen(opp: "Opportunity"):
     with _conn() as conn:
         conn.execute("""
-            INSERT INTO opportunities (url, title, deadline, source, category, description, apply_link)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO opportunities (url, title, deadline, source, category, description, apply_link,
+                                        eligibility_notes, mediums, theme_summary)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(url) DO UPDATE SET
-                last_seen   = date('now'),
-                title       = excluded.title,
-                deadline    = excluded.deadline,
-                category    = excluded.category,
-                description = excluded.description
+                last_seen         = date('now'),
+                title             = excluded.title,
+                deadline          = excluded.deadline,
+                category          = excluded.category,
+                description       = excluded.description,
+                eligibility_notes = excluded.eligibility_notes,
+                mediums           = excluded.mediums,
+                theme_summary     = excluded.theme_summary
         """, (opp.url, opp.title, opp.deadline, opp.source, opp.category,
               _smart_truncate(opp.description) if opp.description else None,
-              opp.apply_url))
+              opp.apply_url, opp.eligibility_notes, opp.mediums, opp.theme_summary))
 
 
 def _save_flagged(opp: "Opportunity"):
@@ -141,7 +169,12 @@ def _safe_get(url: str) -> Optional[requests.Response]:
 
 
 def _html_to_text(html: str) -> str:
-    text = re.sub(r"<[^>]+>", " ", html)
+    # Strip <script>/<style> block CONTENTS, not just their tags — a bare tag-strip
+    # leaves raw JS/CSS source sitting in the output as if it were page text, eating
+    # into whatever character budget a caller then truncates to before reaching any
+    # real content.
+    text = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", " ", html, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -691,6 +724,7 @@ def poll_gmail_inbox() -> list:
 
     log.info(f"Polling Gmail inbox: {addr}")
 
+    mail = None
     try:
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(addr, password)
@@ -701,12 +735,13 @@ def poll_gmail_inbox() -> list:
 
         if not nums:
             log.info("Gmail: no unread messages")
-            mail.logout()
             return []
 
         log.info(f"Gmail: {len(nums)} unread messages")
 
         email_texts = []
+        content_nums = []  # had a usable body — only mark seen if extraction succeeds
+        empty_nums = []     # too short/empty — nothing to lose, always safe to mark seen
         for num in nums[:20]:
             try:
                 _, msg_data = mail.fetch(num, "(RFC822)")
@@ -717,20 +752,60 @@ def poll_gmail_inbox() -> list:
                 if body and len(body.strip()) > 50:
                     subject = _decode_header_str(msg.get("Subject", ""))
                     email_texts.append(f"Subject: {subject}\n\n{body[:3000]}")
-                mail.store(num, "+FLAGS", "\\Seen")
+                    content_nums.append(num)
+                else:
+                    empty_nums.append(num)
             except Exception as e:
                 log.warning(f"Gmail: error processing message {num}: {e}")
 
-        mail.logout()
+        # A message with no usable body never had anything to extract in the first
+        # place — mark it seen unconditionally so it doesn't pile up in the UNSEEN
+        # search on every future poll (crowding out genuinely new mail, since only the
+        # oldest 20 unread messages are ever fetched per run).
+        for num in empty_nums:
+            try:
+                mail.store(num, "+FLAGS", "\\Seen")
+            except Exception as e:
+                log.warning(f"Gmail: could not mark message {num} as seen: {e}")
 
         if not email_texts:
             return []
 
-        return _extract_grants_from_emails(email_texts)
+        opportunities, extraction_ok = _extract_grants_from_emails(email_texts)
+
+        # Only mark content-bearing messages read once extraction actually succeeded —
+        # previously this happened unconditionally per-message during the fetch loop
+        # above, so a failed batch extraction (bad API response, truncated output, etc.)
+        # still left every message marked \Seen, permanently losing their content: the
+        # next poll only ever looks at UNSEEN mail, so a silently-failed batch could
+        # never be retried.
+        if extraction_ok:
+            for num in content_nums:
+                try:
+                    mail.store(num, "+FLAGS", "\\Seen")
+                except Exception as e:
+                    log.warning(f"Gmail: could not mark message {num} as seen: {e}")
+        else:
+            log.warning(
+                f"Gmail: extraction failed — leaving {len(content_nums)} message(s) "
+                f"unread so they're retried on the next poll"
+            )
+
+        return opportunities
 
     except Exception as e:
         log.error(f"Gmail inbox poll failed: {e}")
         return []
+    finally:
+        # Logout in its own guarded block, separate from the try/except above — a
+        # logout failure (e.g. Gmail dropped the connection during the extraction call)
+        # must never discard opportunities/messages-marked-seen work already done; it
+        # used to sit inside the same except that returns [] on any error.
+        if mail is not None:
+            try:
+                mail.logout()
+            except Exception as e:
+                log.warning(f"Gmail: logout failed (non-fatal): {e}")
 
 
 def _decode_header_str(value: str) -> str:
@@ -769,49 +844,115 @@ def _extract_email_body(msg) -> str:
     return "\n".join(parts)
 
 
-def _extract_grants_from_emails(email_texts: list) -> list:
-    """Use Claude Haiku to identify grant/open call mentions in email content."""
+_EXTRACT_OPPORTUNITIES_TOOL = {
+    "name": "record_opportunities",
+    "description": "Record every grant, open call, residency, fellowship, or funding opportunity for visual artists found in the emails.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "opportunities": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "description": {"type": "string", "description": "2-3 sentence description."},
+                        "url": {"type": "string", "description": "Apply URL, or empty string if none given."},
+                        "deadline": {"type": "string", "description": "ISO date e.g. 2026-08-15, or empty string if unknown."},
+                    },
+                    "required": ["title", "description", "url", "deadline"],
+                },
+            },
+        },
+        "required": ["opportunities"],
+    },
+}
+
+
+def _forced_tool_call(client, tool: dict, tool_name: str, prompt: str, max_tokens: int, log_context: str) -> tuple:
+    """
+    Call Claude with a single tool forced, returning (input_dict, ok). ok is False on
+    any failure — API error, output truncated by max_tokens mid-generation, or no
+    tool_use block in the response — each logged with log_context so a caller can tell
+    a genuine empty result from a failed one instead of treating both the same way.
+    Shared by _extract_grants_from_emails and validate_L3 — both moved onto forced
+    tool-use off a fragile regex-plus-json.loads pull from free text, for the same
+    reliability reason.
+    """
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=max_tokens,
+            tools=[tool],
+            tool_choice={"type": "tool", "name": tool_name},
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        if response.stop_reason == "max_tokens":
+            log.warning(f"{log_context}: hit the max_tokens cap — output may be incomplete")
+            return None, False
+
+        tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+        if tool_use is None:
+            log.warning(f"{log_context}: no tool call in response (stop_reason={response.stop_reason})")
+            return None, False
+
+        return tool_use.input, True
+    except Exception as e:
+        log.error(f"{log_context} failed: {e}")
+        return None, False
+
+
+def _extract_grants_from_emails(email_texts: list) -> tuple:
+    """
+    Use Claude Haiku to identify grant/open call mentions in email content.
+    Returns (opportunities, ok) — ok is False on any failure (API error, no tool call
+    in the response, hitting the output token cap mid-generation) so poll_gmail_inbox
+    knows not to mark the source emails read; a failed batch should be retried on the
+    next poll, not silently lost.
+
+    Previously this asked for a bare JSON array in free text and pulled it out with a
+    `\\[.*\\]` regex — fragile against anything that wasn't a clean, complete array (e.g.
+    output truncated by the token cap mid-array, which real newsletter-heavy weeks hit
+    more often, not less, since more source content means more opportunities to describe
+    in the same fixed token budget). A regex miss returned [] with no logging at all,
+    making a real week's newsletters vanish with zero trace. Forced tool-use guarantees
+    a structurally valid result whenever generation completes, and every other failure
+    path now logs specifically instead of falling through silently.
+    """
     combined = "\n\n---EMAIL---\n\n".join(email_texts)
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
     prompt = (
         "You are reviewing email newsletters for artist grant and open call opportunities.\n\n"
         f"Emails:\n{combined}\n\n"
-        "Extract any grants, open calls, residencies, fellowships, or funding opportunities "
-        "for visual artists. For each one found, output a JSON array entry:\n"
-        '{"title": str, "description": str (2-3 sentences), "url": str (apply URL or ""), '
-        '"deadline": str (ISO date e.g. "2026-08-15", or "")}\n\n'
-        "Output ONLY a valid JSON array. If nothing found, output []."
+        "Call record_opportunities with every grant, open call, residency, fellowship, or "
+        "funding opportunity for visual artists found above. If nothing is found, call it "
+        "with an empty list."
     )
 
-    try:
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=2000,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = next((b.text.strip() for b in response.content if hasattr(b, "text")), "[]")
-        match = re.search(r"\[.*\]", raw, re.DOTALL)
-        if not match:
-            return []
-        items = json.loads(match.group())
-        results = []
-        for item in items:
-            if not item.get("title"):
-                continue
-            results.append(Opportunity(
-                title=item.get("title", ""),
-                description=item.get("description", ""),
-                url=item.get("url", ""),
-                apply_url=item.get("url", ""),
-                deadline=item.get("deadline") or None,
-                source="Gmail",
-            ))
-        log.info(f"Gmail: extracted {len(results)} opportunities via AI")
-        return results
-    except Exception as e:
-        log.error(f"Gmail AI extraction failed: {e}")
-        return []
+    result, ok = _forced_tool_call(
+        client, _EXTRACT_OPPORTUNITIES_TOOL, "record_opportunities", prompt,
+        max_tokens=4096, log_context="Gmail AI extraction",
+    )
+    if not ok:
+        return [], False
+
+    items = result.get("opportunities", [])
+    results = []
+    for item in items:
+        if not item.get("title"):
+            continue
+        results.append(Opportunity(
+            title=item.get("title", ""),
+            description=item.get("description", ""),
+            url=item.get("url", ""),
+            apply_url=item.get("url", ""),
+            deadline=item.get("deadline") or None,
+            source="Gmail",
+        ))
+    log.info(f"Gmail: extracted {len(results)} opportunities via AI ({len(email_texts)} emails processed)")
+    return results, True
 
 
 # ---------------------------------------------------------------------------
@@ -861,7 +1002,7 @@ def validate_L2(opportunities: list) -> tuple:
     Entries with no parseable deadline pass through.
     Returns (valid, flagged).
     """
-    today = date.today()
+    today = _today()
     two_years_out = today + timedelta(days=730)
     valid, flagged = [], []
 
@@ -903,16 +1044,68 @@ def validate_L2(opportunities: list) -> tuple:
 # Validation — L3: AI cross-check
 # ---------------------------------------------------------------------------
 
+# Larica's actual eligibility profile — used by validate_L3 to reject opportunities she
+# genuinely can't apply to (a different region's residents-only call, an educator-only
+# award) while keeping ones that merely mention a preference/priority for another group
+# without disqualifying her. Not a medium restriction — she isn't limited to one medium,
+# so medium is only ever extracted for display, never used to reject.
+_ARTIST_PROFILE = (
+    "A visual artist (not an art educator, curator, or student) based in Jersey City, NJ. "
+    "Not restricted to one medium — medium-specific opportunities (e.g. sculpture-only "
+    "grants) are fine to include; medium is informational only and must never be used as "
+    "a reason to reject an opportunity."
+)
+
+_L3_TOOL = {
+    "name": "review_opportunity",
+    "description": "Record the review verdict for a scraped grant/open-call opportunity.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "match": {
+                "type": "boolean",
+                "description": "True only if this is a currently-open opportunity the artist described below is genuinely eligible for.",
+            },
+            "issues": {
+                "type": "string",
+                "description": "If match is false, the specific reason for rejection. If match is true, 'OK'.",
+            },
+            "eligibility_notes": {
+                "type": "string",
+                "description": "Any eligibility restriction or priority worth surfacing up front (e.g. a community/demographic priority, a specific-region focus) — even when it doesn't disqualify the artist. Empty string if there's nothing notable.",
+            },
+            "mediums": {
+                "type": "string",
+                "description": "The media/disciplines this opportunity is seeking, e.g. 'painting, sculpture' — or 'All media' if unspecified/open to all.",
+            },
+            "theme_summary": {
+                "type": "string",
+                "description": "One sentence on the theme or purpose of this opportunity, e.g. what kind of work or statement it's looking for.",
+            },
+        },
+        "required": ["match", "issues", "eligibility_notes", "mediums", "theme_summary"],
+    },
+}
+
+
 def validate_L3(opportunities: list) -> tuple:
     """
-    For each opportunity, fetch its source URL and ask Claude Haiku to verify
-    the scraped title, description, and deadline against the live page content.
-    Returns (verified, flagged).
+    For each opportunity, fetch its source URL and ask Claude Haiku to verify the scraped
+    title, description, and deadline against the live page content — and to check
+    eligibility against _ARTIST_PROFILE, and pull out eligibility notes, mediums, and a
+    theme one-liner for the email write-up. Returns (verified, flagged).
+
+    Anchors "is this still open" to today's actual date (the previous version never
+    stated it, leaving the model to guess — it once concluded an October deadline had
+    "passed" while reasoning from the wrong idea of what day it was). Uses forced
+    tool-use rather than a free-text-plus-regex JSON pull, for the same reliability reason
+    _extract_grants_from_emails was moved off that pattern.
     """
     if not opportunities:
         return [], []
 
     client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    today_str = _today().strftime("%Y-%m-%d")
     verified, flagged = [], []
 
     for opp in opportunities:
@@ -925,50 +1118,67 @@ def validate_L3(opportunities: list) -> tuple:
                 log.info(f"L3 flagged (fetch failed): {opp.title!r}")
                 continue
 
-            page_text = _html_to_text(r.text)[:4000]
+            # 4000 was too tight — real eligibility detail can sit well past a page's nav/
+            # header chrome (confirmed directly: one residency's actual eligibility text
+            # started around character 17,700 of a ~43,000-char page). Bumped substantially
+            # now that _html_to_text also strips script/style content instead of just tags.
+            page_text = _html_to_text(r.text)[:12000]
 
             prompt = (
                 "You are a quality filter for an artist grant finder tool. "
-                "Review this page content and the scraped opportunity data.\n\n"
+                f"Today's date is {today_str}. Review this page content and the scraped "
+                "opportunity data.\n\n"
                 f"Scraped data:\n"
                 f"Title: {opp.title}\n"
                 f"Description: {opp.description}\n"
                 f"Deadline: {opp.deadline or 'not found'}\n"
                 f"Apply URL: {opp.apply_url}\n\n"
-                f"Source page content (truncated to 4000 chars):\n{page_text}\n\n"
+                f"Source page content (truncated to 12000 chars):\n{page_text}\n\n"
+                f"The artist applying is: {_ARTIST_PROFILE}\n\n"
                 "Reject this entry (match: false) if ANY of the following are true:\n"
-                "- The opportunity is closed, past its deadline, or no longer accepting applications\n"
+                f"- The opportunity is closed, or its deadline has already passed as of {today_str} "
+                "(compare the actual dates carefully — do not assume a future-dated deadline has passed)\n"
                 "- This is an informational or about page with no active application process\n"
                 "- This is an archive, past winners, past recipients, or award history page\n"
                 "- This is a general programme overview with no currently open call\n"
                 "- There is no clear way for an artist to apply right now\n"
                 "- The page is navigation, a folder index, or a category listing\n"
-                "- The content is primarily about a past event or past cycle\n\n"
+                "- The content is primarily about a past event or past cycle\n"
+                "- Eligibility is genuinely restricted to a specific region, role, or group that "
+                "excludes the artist described above (e.g. residents of a different specific city/"
+                "state only, or restricted to educators/curators/students when the artist is none "
+                "of those) — but do NOT reject for a stated preference or priority given to a "
+                "particular group when others remain eligible to apply; note that in "
+                "eligibility_notes instead. Never reject for a medium restriction (e.g. "
+                "sculpture-only, painting-only) or for uncertainty about whether the artist works "
+                "in that medium — record the medium in the mediums field instead, and approve "
+                "on every other merit as normal\n\n"
                 "Only approve (match: true) if ALL of the following are true:\n"
                 "- There is an active, open opportunity that artists can currently apply for OR "
                 "an upcoming opportunity with a future deadline clearly stated\n"
                 "- There is a clear application process or link to apply\n"
-                "- The opportunity is relevant to visual artists or artists generally\n\n"
-                'Return JSON: {"match": true/false, "issues": "reason for rejection or OK"}'
+                "- The opportunity is relevant to visual artists or artists generally\n"
+                "- The artist described above is actually eligible to apply\n\n"
+                "Call review_opportunity with your verdict."
             )
 
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=200,
-                messages=[{"role": "user", "content": prompt}],
+            result, ok = _forced_tool_call(
+                client, _L3_TOOL, "review_opportunity", prompt,
+                max_tokens=500, log_context=f"L3 check for {opp.title!r}",
             )
+            if not ok:
+                opp.flagged = True
+                opp.flag_reason = "L3: Review output was truncated or missing"
+                flagged.append(opp)
+                continue
 
-            answer = next((b.text.strip() for b in response.content if hasattr(b, "text")), "")
-            try:
-                json_match = re.search(r'\{.*\}', answer, re.DOTALL)
-                result = json.loads(json_match.group()) if json_match else {}
-                match = result.get("match", False)
-                issues = result.get("issues", "AI could not verify")
-            except Exception:
-                match = False
-                issues = "JSON parse error"
+            match = result.get("match", False)
+            issues = result.get("issues", "AI could not verify")
 
             if match:
+                opp.eligibility_notes = result.get("eligibility_notes", "")
+                opp.mediums = result.get("mediums", "")
+                opp.theme_summary = result.get("theme_summary", "")
                 verified.append(opp)
             else:
                 opp.flagged = True
@@ -1042,7 +1252,8 @@ def categorize(opportunities: list) -> list:
         "Categorise each artist grant/open call into exactly one category:\n"
         "1. Local / Municipal — Jersey City, Hudson County, or other local/municipal programmes\n"
         "2. State-level — New Jersey state-wide opportunities\n"
-        "3. Open Calls — exhibitions, residencies, juried shows at any geography\n"
+        "3. Open Calls — exhibitions, residencies, juried shows the artist is eligible for "
+        "(geography/eligibility is already filtered upstream — categorise on content, not location)\n"
         "4. National Grants — open to US artists nationally regardless of location\n\n"
         f"Opportunities:\n{items_text}\n\n"
         "Output one line per opportunity: [NUMBER]: [CATEGORY NAME]\n"
@@ -1181,13 +1392,16 @@ def run_grants_pipeline(dry_run: bool = False) -> list:
 
     return [
         {
-            "title":       opp.title,
-            "url":         opp.url,
-            "deadline":    opp.deadline,
-            "source":      opp.source,
-            "category":    opp.category,
-            "description": opp.description,
-            "apply_link":  opp.apply_url,
+            "title":             opp.title,
+            "url":               opp.url,
+            "deadline":          opp.deadline,
+            "source":            opp.source,
+            "category":          opp.category,
+            "description":       opp.description,
+            "apply_link":        opp.apply_url,
+            "eligibility_notes": opp.eligibility_notes,
+            "mediums":           opp.mediums,
+            "theme_summary":     opp.theme_summary,
         }
         for opp in final_opps
     ]
