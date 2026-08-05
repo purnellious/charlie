@@ -537,13 +537,29 @@ def get_thread_content(thread_id: str, max_chars: int = 8000) -> str:
     """
     Fetch every message in a thread, chronological, full body per message — deliberately
     does NOT strip quoted content (unlike fetch_new_emails' triage-tuned extraction),
-    since reading an old conversation's quoted history is usually the point. Truncated
-    at max_chars to bound token cost on a runaway-long thread.
+    since reading an old conversation's quoted history is usually the point. Bounded at
+    max_chars to bound token cost on a runaway-long thread.
 
     Surfaces To/Cc per message (not just From/Subject) — previously omitted entirely
     (BUG-024), which meant Jonathan had no way to see who else was actually on a thread
     (e.g. a Cc'd third party) before deciding how to respond, including whether a
     reply-all was appropriate.
+
+    BUG-029: when the thread's combined text exceeds max_chars, whole messages are dropped
+    from the OLDEST end (not sliced off the end of the joined string) — each reply quotes
+    everything before it, so a long thread can cross max_chars by its second or third
+    message, and slicing from the tail silently discarded every message after that point,
+    including whatever's actually new. Keeping from the newest message backward means a
+    long thread loses old context instead of current state.
+
+    An omitted message still gets a one-line, header-only stub (date/sender/subject plus
+    its Gmail Message ID and any attachment names) instead of disappearing outright —
+    forward_email/read_email_attachment locate a specific earlier message by that ID from
+    this function's output, and dropping it silently would make them fail or target the
+    wrong message on exactly the long threads this omits from. The omitted range is always
+    the contiguous oldest block (selection stops at the first message that doesn't fit,
+    rather than skipping it and continuing to smaller, even older ones), so the count in
+    the header note is never misleading about which messages are missing.
     """
     service = _build_service()
     thread = service.users().threads().get(userId="me", id=thread_id, format="full").execute()
@@ -551,7 +567,8 @@ def get_thread_content(thread_id: str, max_chars: int = 8000) -> str:
     # Sort explicitly rather than assume the API response is already ordered.
     messages = sorted(thread.get("messages", []), key=lambda m: int(m.get("internalDate", 0)))
 
-    parts = []
+    parts = []  # full header+body block per message, chronological
+    stubs = []  # one-line header-only fallback per message, chronological, parallel to parts
     for msg in messages:
         payload = msg.get("payload", {})
         headers = {h["name"].lower(): h["value"] for h in payload.get("headers", [])}
@@ -589,10 +606,61 @@ def get_thread_content(thread_id: str, max_chars: int = 8000) -> str:
             header_lines.append(f"Attachments: {names}")
         parts.append("\n".join(header_lines) + f"\n\n{body}")
 
-    combined = "\n\n---\n\n".join(parts)
-    if len(combined) > max_chars:
-        combined = combined[:max_chars] + "\n\n[truncated]"
-    return combined
+        stub_lines = [f"[{received_at}] {display_name} <{sender_email}> — {subject}",
+                      f"  Gmail Message ID: {msg['id']}"]
+        if attachment_list:
+            stub_lines.append(f"  Attachments: {names}")
+        stubs.append("\n".join(stub_lines))
+
+    separator = "\n\n---\n\n"
+
+    # Select whole messages newest-first, stopping at the first one that doesn't fit —
+    # not skipping it to try an older, smaller one — so whatever's omitted is always the
+    # contiguous oldest block the header note below describes, never a gap in the middle.
+    kept = []
+    kept_len = 0
+    for part in reversed(parts):
+        part_len = len(part) + (len(separator) if kept else 0)
+        if kept and kept_len + part_len > max_chars:
+            break
+        kept.append(part)
+        kept_len += part_len
+    kept.reverse()
+    omitted = len(parts) - len(kept)
+
+    # If the stub section for the omitted messages doesn't leave room for the kept full
+    # messages, demote the oldest *kept* message to a stub too (never drop the newest) and
+    # recheck — repeatedly if needed — rather than slicing into any kept message's tail.
+    while True:
+        stub_section = ""
+        if omitted:
+            stub_lines = "\n\n".join(stubs[:omitted])
+            stub_section = (
+                f"[{omitted} earlier message{'s' if omitted != 1 else ''} omitted for length — "
+                f"headers only below, so Gmail Message ID/Attachments stay available]\n\n"
+                f"{stub_lines}{separator}"
+            )
+        combined = separator.join(kept)
+        full = stub_section + combined
+        if len(full) <= max_chars or len(kept) <= 1:
+            break
+        kept.pop(0)
+        omitted += 1
+
+    # Only reachable if even the single remaining message (plus any stub section) still
+    # exceeds max_chars — its own header (including its Gmail Message ID) sits at the top
+    # of `combined`, before its body, so trimming the tail here still keeps that intact.
+    # `min_room` floors the slice at that header so an extreme case (a stub section for a
+    # very long thread eating nearly the whole budget) can't wipe out the one message this
+    # is trying hardest to preserve — max_chars is a soft cost target, not worth honoring
+    # exactly at the cost of losing the newest message's identity entirely.
+    if len(full) > max_chars:
+        header_end = combined.find("\n\n")
+        min_room = header_end + 2 if header_end != -1 else 0
+        room = max(min_room, max_chars - len(stub_section) - len("\n\n[truncated]"))
+        combined = combined[:room] + "\n\n[truncated]"
+        full = stub_section + combined
+    return full
 
 
 def archive_thread(thread_id: str) -> None:
