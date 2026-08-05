@@ -1002,7 +1002,7 @@ def forward_email(
         # inside an already-escaped `&lt;...&gt;` literal), never inside an unquoted HTML
         # attribute — that invariant must hold for any future edit to this block too.
         html_header = (
-            f"<div>{html.escape(note)}</div><br>" if note.strip() else ""
+            f"<div>{html.escape(note).replace(chr(10), '<br>')}</div><br>" if note.strip() else ""
         ) + (
             f'<div style="border-top:1px solid #ccc;padding-top:1em;margin-top:1em;">'
             f"---------- Forwarded message ---------<br>"

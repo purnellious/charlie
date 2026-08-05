@@ -820,3 +820,27 @@ Live-verified, not just deployed: Jonathan replied to a thread through Charlie; 
 `core/tools/email/fetch.py` (`_BodyEndTagFinder`, `_extract_body_inner_html`, `send_email`), `core/bot.py` (`_send_email_proposal_text`)
 
 ---
+
+## BUG-033 — forward_email's HTML note loses line breaks
+
+**Type:** Bug
+**Status:** Closed
+**Priority:** Low
+**Severity:** Low — cosmetic only, plain-text part was always correct; the HTML part (what most recipients actually see) collapsed a multi-line note into one line
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-08-05
+**Topic ID:** TBD — no Telegram topic yet, logged directly via Claude Code; run /createbugtopics to backfill
+
+**Problem:**
+Jonathan noticed a forwarded email's note — shown with line breaks in Charlie's Telegram preview ("Hi Jonathan / You might find this interesting. / Kind regards, / Jonathan") — arrived as one run-on line in the actual received email. `forward_email()`'s HTML path built `f"<div>{html.escape(note)}</div>"` — `html.escape` doesn't touch literal `\n` characters, and HTML collapses raw newlines to whitespace by default, so a multi-line note only ever displayed correctly in the plain-text part (invisible to any HTML-rendering client, which is most of them, including Gmail). Exact same bug class `send_email()`'s reply body already avoided correctly in the same session (BUG-032) via `.replace("\n", "<br>")` — forward's note just never got that treatment.
+
+**What needs fixing:**
+Convert the note's line breaks to `<br>` before embedding it in the HTML part, matching the pattern already used for the reply body.
+
+**Resolved:** 2026-08-05 — one-line fix: `html.escape(note).replace(chr(10), '<br>')` instead of `html.escape(note)` alone. Verified with a mocked multi-line note — the HTML part now renders `Hi Jonathan<br><br>You might find this interesting.<br><br>Kind regards,<br>Jonathan`; the plain-text part (always correct) is unaffected.
+
+**Touches:**
+`core/tools/email/fetch.py` (`forward_email`)
+
+---
