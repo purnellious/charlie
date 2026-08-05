@@ -923,3 +923,23 @@ TestA
 TBD
 
 ---
+
+## BUG-036 — Testb
+**Type:** Bug
+**Status:** Open
+**Priority:** Low
+**Severity:** Low — test entry
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-08-05
+
+**Problem:**
+Testb
+
+**What needs fixing:**
+Testb
+
+**Touches:**
+TBD
+
+---
