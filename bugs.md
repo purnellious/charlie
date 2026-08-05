@@ -435,13 +435,13 @@ The real mitigation is structural, not verbal: consequential actions must requir
 
 ---
 
-## BUG-019 — Gmail API calls in handle_turn()/on_message() block the event loop
+## BUG-019 — Synchronous calls in the shared event loop block the whole bot (Gmail, news briefing, bug-commit git)
 **Type:** Debt
-**Status:** Open
+**Status:** In Progress — fix implemented, not yet closed (see note below)
 **Priority:** Low
-**Severity:** Low — brief blocking per call (a single HTTP round-trip), not a hang; noticed while building send/delete, applies retroactively to every email tool, not something newly introduced
+**Severity:** Low — brief blocking per call (a single HTTP round-trip or git command), not a hang; noticed while building send/delete, applies retroactively to every affected tool, not something newly introduced
 **Blocks anything current:** No
-**Rough effort:** Small-Medium (wrap each call site in `asyncio.to_thread`, matching the pattern `core/tools/email/__init__.py::poll_and_notify` already uses for the background poller)
+**Rough effort:** Small-Medium (wrap each call site in `asyncio.to_thread`, matching the pattern `core/tools/email/__init__.py::poll_and_notify` and `core/scheduler.py`'s `run_in_executor` calls already use)
 **Logged:** 2026-07-30
 **Topic ID:** 2297
 
@@ -450,11 +450,28 @@ The real mitigation is structural, not verbal: consequential actions must requir
 
 **Update (2026-08-01, BUG-023):** two more unwrapped call sites landed with the reply/reply-all/forward build — `forward_email()`/`get_forward_preview()`'s dispatch in `bot.py`'s `on_message()` (`"forward it"` handler), plus `resolve_send_recipients()`'s thread lookup called from `_send_email_proposal_text()`/`_forward_email_proposal_text()` at proposal-preview time. Forward's attachment downloads are a meaningfully larger payload than any existing call site here, so this debt item is more consequential than it was before, not just wider. Still not fixed in this build — deliberately out of scope, tracked here rather than accreting silently.
 
-**What needs fixing:**
-Wrap each direct Gmail API call site in `asyncio.to_thread(...)`, consistent with the already-proven pattern in `poll_and_notify`. Not urgent — round-trips are typically sub-second, and this has been true since `search_email`/`read_email_thread` shipped without complaint — but worth fixing in one pass across all the call sites rather than accreting more un-wrapped call sites with each new email tool.
+**Update (2026-08-05):** two more unwrapped call sites added incidentally by the BUG-029/BUG-030 fixes — `trash_thread()` and `get_thread_summary()` are now each called in a per-thread loop (batch delete), same unwrapped shape as before, just repeated per item.
+
+Also, a broader architecture question from Jonathan ("is Charlie generally orchestrator-with-worker-streams?") turned up two more instances of the exact same root problem, outside email entirely, via a full-codebase survey:
+- **News briefing:** `generate_briefing()` (`core/tools/news.py`) does synchronous `feedparser.parse()` across up to 9 RSS sources plus a synchronous `anthropic.Anthropic().messages.create()` call — called unwrapped from *both* `scheduler.py`'s `_send_news_briefing` job and the live tool-dispatch loop's `tool_get_news_briefing()` (`agent.py`, no `await`/`to_thread`). Unlike the Gmail case, this one also blocks a *scheduled* job, not just an interactive turn.
+- **Bug-tracking git commits:** `_commit_bugs_md()` (`core/tools/bugs.py`) runs `subprocess.run(["git", ...], timeout=10/30)` synchronously on every `log_bug`/`resolve_bug` call, both invoked directly from `agent.py`'s dispatch loop. A slow `git push` blocks the whole bot for up to 30 seconds.
+
+The survey also confirmed the *intended* pattern (orchestrator delegates, stays responsive) is correctly followed elsewhere: Claude Code builds (`asyncio.create_subprocess_exec` + `await`), self-restart (detached subprocess), the council/judge-panel tool (`asyncio.gather`), the grants and Larica pipelines (`run_in_executor`), World Cup data (async httpx), and distillation (`AsyncAnthropic`). These three — Gmail, news briefing, bug-commit git — are the exceptions, not the rule. See [[BUG-034]] for a related but distinct finding from the same survey (Telegram's `concurrent_updates` is off, serializing all conversations regardless of this bug's fix).
+
+**Fix implemented, 2026-08-05 (not yet closed):** wrapped all 14 direct blocking call sites in `asyncio.to_thread(...)` — `agent.py`'s search_email/read_email_thread/archive_email/mark_email_read/mark_email_unread/log_bug/resolve_bug/get_news_briefing dispatch branches; `bot.py`'s send_email/trash_thread/forward_email execution plus all six proposal-preview-helper call sites; `scheduler.py`'s `_send_news_briefing` job. Empirically verified with a real Gmail call and a fake concurrent coroutine: unwrapped, the other coroutine's first tick was delayed ~1s (the whole bot frozen for that long); wrapped, it ticked on schedule throughout a 2.5s call with no gap.
+
+This surfaced two further rounds of real bugs via `/code-review`, both worth recording in full since they're a good example of a fix at this scale needing more than one pass:
+
+1. **Round 1 review** found that `asyncio.to_thread` removed an *accidental* protection: since everything used to run serially on the single event loop thread, `bugs.py`'s read-modify-write of `bugs.md` (`create_bug_entry`/`close_bug`/`set_bug_topic_id`/`clear_bug_topic_id`/`reopen_bug`, each read-then-write-then-git-commit) and `news.py`'s `generate_briefing()` (read-unshown-articles-then-mark-shown) could never actually overlap — now, running on real OS threads, they genuinely could, risking duplicate `BUG-NNN` ids / lost writes / a `git commit` `index.lock` collision, or duplicate news delivered twice across two Telegram topics. **Fixed** by adding a module-level `threading.Lock()` in each file (`_BUGS_LOCK`, `_BRIEFING_LOCK`) around the full read-modify-write-commit critical section. Verified empirically against a scratch git repo: 12 concurrent `create_bug_entry` calls produced 12 unique ids with the lock versus only 2 unique ids and 3 surviving entries (9 lost) without it; the news lock was shown to fully serialize 4 concurrent 0.3s sections with zero overlap ever detected.
+
+2. **Round 2 review** found the fix for round 1 introduced a *new* instance of this exact bug, one level down: `create_bug_topic()` and `reconcile_bug_topics()` (both `async def`, awaited directly on the event loop from `agent.py`'s `log_bug` dispatch, `bot.py`'s `/createbugtopics` handler, and `scheduler.py`'s nightly reconciliation job) called the now lock-guarded `set_bug_topic_id`/`clear_bug_topic_id` *synchronously* — so the event loop itself could block waiting on `_BUGS_LOCK.acquire()` for as long as a worker thread held it through a slow `git push`, freezing every Telegram topic, the exact failure this whole bug is about, reintroduced through lock contention instead of a raw Gmail call. **Fixed** by wrapping those two call sites in `asyncio.to_thread` too. Verified empirically: a background thread held `_BUGS_LOCK` for 1s while a concurrent coroutine ticked every 50ms — unwrapped, the first tick was delayed the full ~0.9s; wrapped, ticks stayed on schedule throughout. Round 2 also flagged `news.py`'s lock scope as broader than necessary (covering the RSS fetch, not just the shown/unshown span) — moved outside the lock as a latency cleanup.
+
+3. **Round 3 review** (checking the round 2 delta) found that latency "cleanup" was itself a correctness regression: with the fetch unlocked, a second concurrent `generate_briefing()` call's lock turn could consume the very articles the first call just fetched before the first call reached `_get_unshown_articles()` — the first call (which may be the one that actually fetched the news, e.g. the scheduled briefing) would then falsely report "No new articles," a fetch result silently stolen rather than duplicated. **Reverted** — `init_db()`/`_fetch_all_feeds()` moved back inside `_BRIEFING_LOCK`, accepting the minor added latency in the rare case two briefing calls overlap as the correct trade against actually losing news content. Re-verified the lock still fully serializes after the revert (4×0.3s sections, ~1.2s elapsed, zero overlap).
+
+**Deliberately left open:** three rounds of review and fixes on mocked/scratch data is still not the same as proof it works live, per this log's own standard (see BUG-030). Needs deployment to the always-on Mac and real usage — ideally overlapping a live email/bug/news action with the scheduled noon news briefing or nightly bug reconciliation, since that's exactly the condition all three rounds of races depended on — before this is marked Closed.
 
 **Touches:**
-`core/agent.py` (tool dispatch branches), `core/bot.py` (send/delete execution blocks)
+`core/agent.py` (tool dispatch branches: search_email, read_email_thread, archive_email, mark_email_read, mark_email_unread, log_bug, resolve_bug, get_news_briefing), `core/bot.py` (send/delete/forward execution blocks, proposal-preview helpers), `core/tools/news.py` (`generate_briefing`, new `_BRIEFING_LOCK`), `core/tools/bugs.py` (`create_bug_entry`, `close_bug`, `set_bug_topic_id`, `clear_bug_topic_id`, `reopen_bug`, `create_bug_topic`, `reconcile_bug_topics`, new `_BUGS_LOCK`), `core/scheduler.py` (`_send_news_briefing`)
 
 ---
 
@@ -730,7 +747,7 @@ TBD — likely a new small test-harness script/doc, plus a cadence note added to
 
 ## BUG-029 — read_email_thread fails to surface most recent messages in a thread
 **Type:** Bug
-**Status:** Open
+**Status:** Closed
 **Priority:** High
 **Severity:** High — causes Charlie to act on stale email content and misreport thread state to Jonathan
 **Blocks anything current:** No
@@ -741,11 +758,14 @@ TBD — likely a new small test-harness script/doc, plus a cadence note added to
 **Problem:**
 read_email_thread consistently fails to return the most recent message(s) in a thread. Observed twice in the same conversation with thread 19ed5cca3178e967: (1) after a new email arrived today about mice/permit, read_email_thread still reported the June 17 message as the latest; (2) after Erika replied to Jonathan's thank you mentioning humidity and buckling floors, read_email_thread again failed to surface that message. Charlie drafted and reasoned based on stale content as a result.
 
-**What needs fixing:**
-Investigate how get_thread_content() fetches and orders messages — likely either not fetching all pages of a long thread, not sorting by internalDate correctly (BUG-024 previously added sorting, but may not be working correctly), or caching stale content. Verify against the real thread 19ed5cca3178e967 which has known recent messages.
+**Root cause, confirmed 2026-08-05:** not pagination or sort order (both already correct — BUG-024's sort by `internalDate` works fine). `get_thread_content()` sorted messages oldest-first, joined them into one string, and truncated at a fixed `max_chars` (8000) by slicing the joined string from character 0 — `combined[:max_chars]`. Since each reply quotes the entire conversation before it, a long thread's combined text can cross 8000 characters by its second or third message, and the tail-slice then silently discarded every message after that point — including whatever's actually new. Confirmed directly against thread 19ed5cca3178e967 (36 messages, June 17 – Aug 4): the old logic hit the cap partway through message 2, discarding all of July and August, including the exact humidity/floors message Jonathan reported missing.
+
+**Fix implemented, 2026-08-05 (not yet closed):** `get_thread_content()` now selects whole messages newest-first, stopping at the first one that doesn't fit (not skipping it to try an older, smaller one, which a code-review workflow caught as a bug in the first draft — it could otherwise create a non-contiguous gap the omission note wouldn't disclose). Whatever's omitted is always the contiguous oldest block. Omitted messages aren't dropped without a trace — each gets a one-line stub (date/sender/subject plus its Gmail Message ID and any attachment names), since [[BUG-020]]'s `read_email_attachment` and `propose_forward_email` both locate a specific earlier message by the ID in this function's output; a second code-review pass caught that the first draft's blanket omission note would silently break those tools' earlier-message lookups on exactly the long threads this omits from. The newest message's own content is never sliced to make room for the note or stub section — if the budget is still tight after dropping everything else, the oldest *kept* message is demoted to a stub too (repeatedly, if needed) rather than truncating into the newest message's tail; a code-review-caught edge case (the note itself pushing an otherwise-fitting result over budget) is handled the same way, with a floor ensuring even a last-resort truncation never cuts into the newest message's own header/ID. Verified against the real thread (19ed5cca3178e967): all 36 messages' Gmail Message IDs are discoverable, the 3 most recent messages are present including the humidity/floors one originally reported missing, and output stays within the 8000-char budget. Went through two `/code-review` passes (high effort) — the first caught 3 real regressions in the initial draft (newest-content loss via the note-length interaction, lost metadata for omitted messages, non-contiguous gaps), all fixed and re-verified against the exact adversarial scenarios the review constructed.
+
+**Closed:** 2026-08-05 — deployed to the always-on Mac (clean restart, no errors) and live-tested with two separate long threads through the live Email topic (topic 2271): Jonathan asked Charlie to read the Erika Odle thread (`19ed5cca3178e967`) and, separately, the Hanekom/RCC disbursements thread (`19df2bb461a93383`). Charlie reported the latest message on each as, respectively, Jonathan's own Aug 4 reply and Zaheer Seedat's Aug 5 reply. Verified independently via the Gmail API directly (not the chat transcript) against both threads: the Erika thread's actual newest message is `Tue, 4 Aug 2026 06:09:13 -0400` from Jonathan Purnell (matches, once converted from the tool's UTC display), and the Hanekom thread's actual newest message is `Wed, 5 Aug 2026 09:36:24 +0000` from Zaheer Seedat (exact match) — both correct on threads Charlie previously would have reported stale content for.
 
 **Touches:**
-TBD
+`core/tools/email/fetch.py` (`get_thread_content`)
 
 **Cross-reference, [[BUG-020]]:** `read_email_attachment` (built the same day this bug was logged) defaults to a thread's most recent message via the identical pattern implicated here — `threads().get()`'s message list, sorted by `internalDate`, take the last one (`get_forward_preview`/`get_thread_summary` share this same pattern too, and predate this bug). Shipped anyway rather than held back: the exposure is narrower there (only matters when `gmail_message_id` is omitted, the target attachment is genuinely on the newest message, and that message isn't surfaced — and the tool's own description was just hardened this session to push toward always passing `gmail_message_id` whenever a thread has multiple messages), and whichever fix lands here will apply to `read_email_attachment` automatically, since it's the same underlying fetch. Whoever resolves this bug should verify `read_email_attachment`'s default-message-targeting behavior as part of confirming the fix, not just `read_email_thread`'s digest.
 
@@ -753,7 +773,7 @@ TBD
 
 ## BUG-030 — Email deletions falsely reported as successful when they didn't execute
 **Type:** Bug
-**Status:** Open
+**Status:** Closed
 **Priority:** High
 **Severity:** High — Charlie tells Jonathan emails were deleted when they weren't, giving false confidence
 **Blocks anything current:** No
@@ -764,11 +784,20 @@ TBD
 **Problem:**
 When Jonathan confirmed batch email deletions with "delete it", the chat showed "Deleted (moved to Trash — recoverable for 30 days)" but a subsequent inbox search confirmed all 7 emails were still present. The deletion confirmations were false positives. Same may apply to earlier individual deletions in this session.
 
-**What needs fixing:**
-Investigate propose_delete_email and the "delete it" confirmation handler in bot.py — determine whether the Gmail API trash call is actually being made, whether errors are being swallowed silently, and whether the confirmation message is being sent before verifying the API call succeeded. Add proper error handling and only report success after a confirmed API response.
+**Root cause, confirmed 2026-08-05 (found via a fresh repro — Jonathan asked to batch-delete 4 "delete candidates" from a digest, confirmed once, and only the Amtrak email was actually deleted):** the whole delete pipeline was single-item at every layer, despite Charlie describing the action as a "batch delete":
+1. `propose_delete_email`'s tool schema (`core/agent.py`) only accepted one `thread_id` — no way to pass a list.
+2. `handle_turn()` stored the proposal in a single variable, not a list — if Charlie called the tool once per email (the only option available), each call silently overwrote the previous one.
+3. `PENDING_DELETE_EMAIL` in `bot.py` was `dict[int, dict]` — one pending delete per topic, not a queue.
+4. The "delete it" handler popped exactly one pending dict and trashed exactly one thread.
+
+So a single "delete it" only ever deleted whichever email was proposed *last* (silently discarding the rest) — `trash_thread()` itself has no swallowed-error path (a bare `.execute()` that raises normally, and the handler's existing try/except already reported real failures), so the false-positive read was really "N-1 of N were never even proposed," not a lie about the one that did execute. This matches this bug's original 7-email report closely enough (only the final proposed thread would've actually gone to Trash) to treat as the same root cause rather than a separate one — no other error-swallowing path was found in `trash_thread`/the confirm handler during this investigation.
+
+**Fix implemented, 2026-08-05 (not yet closed):** made the pipeline genuinely list-based instead of single-item: `propose_delete_email`'s schema now takes `thread_ids: string[]` (tool description explicitly tells Charlie to pass every id in one call for a batch, not one call per email); `PENDING_DELETE_EMAIL` holds `{"thread_ids": [...], "reason": ...}`; `_delete_email_proposal_text()` fetches and lists a fresh Gmail summary per thread (one bad id doesn't blank the rest of the preview); the "delete it" handler loops `trash_thread()` over every id, collecting per-thread failures independently and reporting "Deleted M/N... Failed: ..." rather than a blanket success — so a partial failure can never again be reported as if the whole batch succeeded. Single-item deletes still work unchanged (a one-element list). Dry-run verified locally against mocked `get_thread_summary`/`trash_thread` (all-succeed, single-item, and partial-failure cases) since this repo has no test suite.
+
+**Closed:** 2026-08-05 — deployed to the always-on Mac (rsync + `launchctl stop/start com.charlie`, clean restart, no errors in `charlie.log`) and live-tested: Jonathan asked Charlie to "batch delete the delete candidates" again in the live Email topic (topic 2271). Charlie proposed all 3 remaining threads in a single `propose_delete_email` call (`thread_ids: ["19fcfafa8a98ca92", "19fd1cebd8d05cde", "19fd1858f1e84011"]` — Buffer, Elliptic, 1% Better), Jonathan replied "delete it" once, and Charlie reported "Deleted all 3." Verified independently via the Gmail API directly (not just the chat transcript, per this bug's original "falsely reported" failure mode) — fetched all 3 thread_ids and confirmed each carries the `TRASH` label. Root cause fully resolved: the single-item pipeline (BUG-030's actual defect) is now list-based end to end, and reporting is grounded in what actually happened per thread rather than a blanket success message.
 
 **Touches:**
-TBD
+`core/agent.py` (`propose_delete_email` schema + dispatch + system prompt), `core/bot.py` (`PENDING_DELETE_EMAIL`, `_delete_email_proposal_text`, the "delete it" handler)
 
 ---
 
@@ -842,5 +871,54 @@ Convert the note's line breaks to `<br>` before embedding it in the HTML part, m
 
 **Touches:**
 `core/tools/email/fetch.py` (`forward_email`)
+
+---
+
+## BUG-034 — Telegram updates are processed serially; Charlie can't reason about two topics at once
+**Type:** Debt
+**Status:** Open
+**Priority:** Low
+**Severity:** N/A — architectural constraint, not a defect; no reported incident
+**Blocks anything current:** No
+**Rough effort:** Medium-Large (not a mechanical fix — requires auditing shared in-memory state for cross-topic races before it's safe to flip on)
+**Logged:** 2026-08-05
+**Topic ID:** TBD — no Telegram topic yet, logged directly via Claude Code; run /createbugtopics to backfill
+
+**Problem:**
+Found during a full-codebase concurrency survey prompted by Jonathan asking whether Charlie is generally built as "the agent in charge, with subordinate functions as worker streams." `core/bot.py`'s `Application.builder()...build()` never calls `.concurrent_updates(True)`, so python-telegram-bot processes Telegram updates **serially** — one `on_message`/`handle_turn` call at a time, for the entire bot, regardless of which topic it's for. Even after [[BUG-019]]'s fix (delegating blocking Gmail/news/git calls to worker threads so they don't freeze the loop), the actual Claude API call inside `handle_turn()` is still awaited synchronously within that one serial update-processing task. So if Jonathan messages Charlie in two different topics close together, the second one queues behind the first's entire turn (including its own Claude round-trip and any tool calls) rather than getting a concurrent response.
+
+This is a distinct question from BUG-019: BUG-019 is "don't block on I/O you could delegate"; this is "should two conversations be able to make progress at the same time at all." Whether that's actually a problem depends on what Jonathan expects from Charlie day-to-day — a personal Chief of Staff bot with one owner may reasonably only ever have one active conversation anyway, in which case this is a non-issue in practice, or he may want to message multiple topics in a burst and get parallel responses.
+
+**What needs deciding (not yet decided):**
+1. Does Jonathan actually want concurrent cross-topic responses, or is one-at-a-time acceptable/expected for a single-owner assistant?
+2. If concurrency is wanted: enabling `concurrent_updates(True)` requires auditing every piece of shared in-memory state for cross-topic races first — `PENDING_SEND_EMAIL`/`PENDING_DELETE_EMAIL`/`PENDING_FORWARD_EMAIL` (keyed by `topic_id`, likely fine per-topic but unverified under real concurrency), `ACTIVE_TOPICS` (exists specifically to block overlapping turns *within* the same topic — needs to keep working correctly once cross-topic overlap is allowed), and the cost implication of multiple concurrent Claude API calls (more simultaneous spend, may want a concurrency cap rather than fully unbounded).
+
+**What needs fixing:**
+TBD — pending the decision above. Not a "wrap in asyncio.to_thread" fix like BUG-019; this is a real architectural choice with its own tradeoffs.
+
+**Touches:**
+`core/bot.py` (`Application` builder), plus whatever shared state the audit above turns up
+
+**Cross-reference, [[BUG-019]]:** the two bugs came from the same investigation and are complementary — BUG-019 makes individual blocking calls non-blocking; this bug is about whether the bot can process more than one conversation's turn at a time in the first place, which BUG-019's fix alone does not enable.
+
+---
+
+## BUG-035 — TestA
+**Type:** Bug
+**Status:** Open
+**Priority:** Low
+**Severity:** Low — test entry
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-08-05
+
+**Problem:**
+TestA
+
+**What needs fixing:**
+TestA
+
+**Touches:**
+TBD
 
 ---
