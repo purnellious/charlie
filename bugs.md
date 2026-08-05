@@ -753,7 +753,7 @@ TBD
 
 ## BUG-030 — Email deletions falsely reported as successful when they didn't execute
 **Type:** Bug
-**Status:** In Progress — fix implemented, not yet closed (see note below)
+**Status:** Closed
 **Priority:** High
 **Severity:** High — Charlie tells Jonathan emails were deleted when they weren't, giving false confidence
 **Blocks anything current:** No
@@ -774,7 +774,7 @@ So a single "delete it" only ever deleted whichever email was proposed *last* (s
 
 **Fix implemented, 2026-08-05 (not yet closed):** made the pipeline genuinely list-based instead of single-item: `propose_delete_email`'s schema now takes `thread_ids: string[]` (tool description explicitly tells Charlie to pass every id in one call for a batch, not one call per email); `PENDING_DELETE_EMAIL` holds `{"thread_ids": [...], "reason": ...}`; `_delete_email_proposal_text()` fetches and lists a fresh Gmail summary per thread (one bad id doesn't blank the rest of the preview); the "delete it" handler loops `trash_thread()` over every id, collecting per-thread failures independently and reporting "Deleted M/N... Failed: ..." rather than a blanket success — so a partial failure can never again be reported as if the whole batch succeeded. Single-item deletes still work unchanged (a one-element list). Dry-run verified locally against mocked `get_thread_summary`/`trash_thread` (all-succeed, single-item, and partial-failure cases) since this repo has no test suite.
 
-**Deliberately left open:** this is a Tier 3 build (deletes data) per `principles.md` — closing requires a live end-to-end test with confirmed output, not just a local dry-run against mocks. That means deploying to the always-on Mac and Jonathan actually confirming a real batch delete via Telegram, then verifying via the Gmail API (not just eyeballing the chat) that every thread in the batch actually landed in Trash. Do not mark this Closed until that's done — per past bug-closure mistakes in this log, documentation of a fix is not the same as proof it works.
+**Closed:** 2026-08-05 — deployed to the always-on Mac (rsync + `launchctl stop/start com.charlie`, clean restart, no errors in `charlie.log`) and live-tested: Jonathan asked Charlie to "batch delete the delete candidates" again in the live Email topic (topic 2271). Charlie proposed all 3 remaining threads in a single `propose_delete_email` call (`thread_ids: ["19fcfafa8a98ca92", "19fd1cebd8d05cde", "19fd1858f1e84011"]` — Buffer, Elliptic, 1% Better), Jonathan replied "delete it" once, and Charlie reported "Deleted all 3." Verified independently via the Gmail API directly (not just the chat transcript, per this bug's original "falsely reported" failure mode) — fetched all 3 thread_ids and confirmed each carries the `TRASH` label. Root cause fully resolved: the single-item pipeline (BUG-030's actual defect) is now list-based end to end, and reporting is grounded in what actually happened per thread rather than a blanket success message.
 
 **Touches:**
 `core/agent.py` (`propose_delete_email` schema + dispatch + system prompt), `core/bot.py` (`PENDING_DELETE_EMAIL`, `_delete_email_proposal_text`, the "delete it" handler)
