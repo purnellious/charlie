@@ -675,6 +675,12 @@ async def handle_turn(
     # function returns, so it never persists to charlie.db (see core/history.py's
     # existing precedent of stripping thinking blocks before storage).
     raw_content_results = []
+    # Once a send/forward/delete proposal is made, bot.py sends its own grounded
+    # confirmation message right after handle_turn returns — any further plain-text
+    # response the model writes this turn (e.g. after seeing the tool result) would only
+    # duplicate that message, so stop forwarding text to Telegram from this point on.
+    # A system-prompt instruction alone doesn't reliably stop the model from doing this.
+    suppress_text = False
 
     while True:
         create_kwargs = dict(
@@ -710,7 +716,7 @@ async def handle_turn(
 
         # Send text response
         combined_text = "\n".join(text_parts).strip()
-        if combined_text:
+        if combined_text and not suppress_text:
             await _send_chunks(combined_text, send_fn)
 
         messages = messages + [{"role": "assistant", "content": response.content}]
@@ -811,6 +817,7 @@ async def handle_turn(
                         "tool_use_id": block.id,
                         "content": "Send proposed. It will only send if Jonathan replies 'send it'.",
                     })
+                    suppress_text = True
 
             elif block.name == "propose_forward_email":
                 fwd_thread_id = block.input.get("thread_id") or None
@@ -840,6 +847,7 @@ async def handle_turn(
                     "tool_use_id": block.id,
                     "content": "Forward proposed. It will only forward if Jonathan replies 'forward it'.",
                 })
+                suppress_text = True
 
             elif block.name == "propose_delete_email":
                 proposed_delete_email = {
@@ -851,6 +859,7 @@ async def handle_turn(
                     "tool_use_id": block.id,
                     "content": "Delete proposed. It will only delete if Jonathan replies 'delete it'.",
                 })
+                suppress_text = True
 
             elif block.name == "log_bug":
                 from core.tools.bugs import create_bug_entry, create_bug_topic, get_bug_by_id
