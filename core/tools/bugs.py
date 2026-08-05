@@ -7,6 +7,7 @@ import asyncio
 import logging
 import re
 import subprocess
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -16,6 +17,14 @@ log = logging.getLogger(__name__)
 
 BUGS_PATH = Path(__file__).parent.parent.parent / "bugs.md"
 _GIT_ROOT = str(BUGS_PATH.parent)
+
+# Every read-modify-write of bugs.md (below) plus its git commit is serialized through
+# this lock. Before create_bug_entry/close_bug were wrapped in asyncio.to_thread (BUG-019),
+# the single event loop thread made these calls mutually exclusive by accident; running
+# them on real OS threads makes concurrent bugs.md writes (lost updates, duplicate BUG-NNN
+# ids from two get_next_bug_id() reads racing) and concurrent `git commit`s (index.lock
+# collisions) genuinely possible for the first time.
+_BUGS_LOCK = threading.Lock()
 
 # Telegram topic name limit
 MAX_TOPIC_NAME = 128
@@ -108,100 +117,104 @@ def get_bug_by_id(bug_id: str) -> dict | None:
 
 def clear_bug_topic_id(bug_id: str):
     """Remove the Topic ID field from a bug entry."""
-    lines = BUGS_PATH.read_text().splitlines()
-    result = []
-    in_bug = False
-    for line in lines:
-        if line.startswith(f'## {bug_id} — '):
-            in_bug = True
-        elif re.match(r'^## BUG-\d+', line):
-            in_bug = False
-        if in_bug and line.startswith('**Topic ID:**'):
-            continue  # strip the stale topic_id
-        result.append(line)
-    BUGS_PATH.write_text('\n'.join(result))
-    log.info(f"Cleared topic_id for {bug_id}")
-    _commit_bugs_md(f"Clear topic_id for {bug_id}")
+    with _BUGS_LOCK:
+        lines = BUGS_PATH.read_text().splitlines()
+        result = []
+        in_bug = False
+        for line in lines:
+            if line.startswith(f'## {bug_id} — '):
+                in_bug = True
+            elif re.match(r'^## BUG-\d+', line):
+                in_bug = False
+            if in_bug and line.startswith('**Topic ID:**'):
+                continue  # strip the stale topic_id
+            result.append(line)
+        BUGS_PATH.write_text('\n'.join(result))
+        log.info(f"Cleared topic_id for {bug_id}")
+        _commit_bugs_md(f"Clear topic_id for {bug_id}")
 
 
 def set_bug_topic_id(bug_id: str, topic_id: int):
     """Add or update the Topic ID field in a bug entry."""
-    lines = BUGS_PATH.read_text().splitlines()
-    result = []
-    in_bug = False
-    topic_set = False
+    with _BUGS_LOCK:
+        lines = BUGS_PATH.read_text().splitlines()
+        result = []
+        in_bug = False
+        topic_set = False
 
-    for line in lines:
-        if line.startswith(f'## {bug_id} — '):
-            in_bug = True
-            topic_set = False
-        elif re.match(r'^## BUG-\d+', line):
-            in_bug = False
+        for line in lines:
+            if line.startswith(f'## {bug_id} — '):
+                in_bug = True
+                topic_set = False
+            elif re.match(r'^## BUG-\d+', line):
+                in_bug = False
 
-        # Replace existing Topic ID line
-        if in_bug and line.startswith('**Topic ID:**'):
-            result.append(f'**Topic ID:** {topic_id}')
-            topic_set = True
-            continue
+            # Replace existing Topic ID line
+            if in_bug and line.startswith('**Topic ID:**'):
+                result.append(f'**Topic ID:** {topic_id}')
+                topic_set = True
+                continue
 
-        result.append(line)
+            result.append(line)
 
-        # Insert after **Logged:** if not yet added
-        if in_bug and line.startswith('**Logged:**') and not topic_set:
-            result.append(f'**Topic ID:** {topic_id}')
-            topic_set = True
+            # Insert after **Logged:** if not yet added
+            if in_bug and line.startswith('**Logged:**') and not topic_set:
+                result.append(f'**Topic ID:** {topic_id}')
+                topic_set = True
 
-    BUGS_PATH.write_text('\n'.join(result))
-    log.info(f"Set topic_id={topic_id} for {bug_id}")
-    _commit_bugs_md(f"Set topic_id={topic_id} for {bug_id}")
+        BUGS_PATH.write_text('\n'.join(result))
+        log.info(f"Set topic_id={topic_id} for {bug_id}")
+        _commit_bugs_md(f"Set topic_id={topic_id} for {bug_id}")
 
 
 def close_bug(bug_id: str, resolution: str):
     """Mark a bug as Closed and append resolution notes."""
-    lines = BUGS_PATH.read_text().splitlines()
-    result = []
-    in_bug = False
+    with _BUGS_LOCK:
+        lines = BUGS_PATH.read_text().splitlines()
+        result = []
+        in_bug = False
 
-    for line in lines:
-        if line.startswith(f'## {bug_id} — '):
-            in_bug = True
-        elif re.match(r'^## BUG-\d+', line):
-            in_bug = False
+        for line in lines:
+            if line.startswith(f'## {bug_id} — '):
+                in_bug = True
+            elif re.match(r'^## BUG-\d+', line):
+                in_bug = False
 
-        if in_bug and line.startswith('**Status:** Open'):
-            result.append('**Status:** Closed')
-            result.append(f'**Resolution:** {resolution}')
-        else:
-            result.append(line)
+            if in_bug and line.startswith('**Status:** Open'):
+                result.append('**Status:** Closed')
+                result.append(f'**Resolution:** {resolution}')
+            else:
+                result.append(line)
 
-    BUGS_PATH.write_text('\n'.join(result))
-    log.info(f"Closed {bug_id}")
-    _commit_bugs_md(f"Close {bug_id}")
+        BUGS_PATH.write_text('\n'.join(result))
+        log.info(f"Closed {bug_id}")
+        _commit_bugs_md(f"Close {bug_id}")
 
 
 def reopen_bug(bug_id: str):
     """Mark a bug as Open (removing Closed/Resolution lines)."""
-    lines = BUGS_PATH.read_text().splitlines()
-    result = []
-    in_bug = False
+    with _BUGS_LOCK:
+        lines = BUGS_PATH.read_text().splitlines()
+        result = []
+        in_bug = False
 
-    for line in lines:
-        if line.startswith(f'## {bug_id} — '):
-            in_bug = True
-        elif re.match(r'^## BUG-\d+', line):
-            in_bug = False
+        for line in lines:
+            if line.startswith(f'## {bug_id} — '):
+                in_bug = True
+            elif re.match(r'^## BUG-\d+', line):
+                in_bug = False
 
-        if in_bug and line.startswith('**Status:** Closed'):
-            result.append('**Status:** Open')
-            continue
-        if in_bug and line.startswith('**Resolution:**'):
-            continue  # Remove resolution line on reopen
+            if in_bug and line.startswith('**Status:** Closed'):
+                result.append('**Status:** Open')
+                continue
+            if in_bug and line.startswith('**Resolution:**'):
+                continue  # Remove resolution line on reopen
 
-        result.append(line)
+            result.append(line)
 
-    BUGS_PATH.write_text('\n'.join(result))
-    log.info(f"Reopened {bug_id}")
-    _commit_bugs_md(f"Reopen {bug_id}")
+        BUGS_PATH.write_text('\n'.join(result))
+        log.info(f"Reopened {bug_id}")
+        _commit_bugs_md(f"Reopen {bug_id}")
 
 
 def create_bug_entry(
@@ -214,10 +227,11 @@ def create_bug_entry(
     what_to_fix: str,
 ) -> str:
     """Append a new bug entry to bugs.md. Returns the new bug ID."""
-    bug_id = get_next_bug_id()
-    today = datetime.now().strftime('%Y-%m-%d')
+    with _BUGS_LOCK:
+        bug_id = get_next_bug_id()
+        today = datetime.now().strftime('%Y-%m-%d')
 
-    entry = f"""
+        entry = f"""
 ## {bug_id} — {title}
 **Type:** {type}
 **Status:** Open
@@ -238,11 +252,11 @@ TBD
 
 ---
 """
-    content = BUGS_PATH.read_text() if BUGS_PATH.exists() else ""
-    BUGS_PATH.write_text(content.rstrip('\n') + '\n' + entry)
-    log.info(f"Created {bug_id}: {title}")
-    _commit_bugs_md(f"Log {bug_id}: {title}")
-    return bug_id
+        content = BUGS_PATH.read_text() if BUGS_PATH.exists() else ""
+        BUGS_PATH.write_text(content.rstrip('\n') + '\n' + entry)
+        log.info(f"Created {bug_id}: {title}")
+        _commit_bugs_md(f"Log {bug_id}: {title}")
+        return bug_id
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +292,16 @@ async def create_bug_topic(bug: dict) -> int:
     # send — otherwise a transient failure here would leave a live, orphaned
     # Telegram topic with no record in bugs.md, and the next reconciliation
     # run would see "no topic_id" and create a genuine duplicate.
-    set_bug_topic_id(bug['bug_id'], thread_id)
+    #
+    # Dispatched via asyncio.to_thread rather than called directly: this is
+    # async code running on the event loop, and set_bug_topic_id now acquires
+    # _BUGS_LOCK — a plain threading.Lock, which blocks whatever thread calls
+    # it. Calling it directly here would mean the event loop itself blocks
+    # (freezing every Telegram topic, not just this one) for as long as
+    # another thread holds the lock through its own git commit/push — the
+    # exact failure mode BUG-019's asyncio.to_thread migration exists to
+    # prevent, just reintroduced one level down through lock contention.
+    await asyncio.to_thread(set_bug_topic_id, bug['bug_id'], thread_id)
     log.info(f"Created topic {thread_id} for {bug['bug_id']}")
 
     # Opening message with bug summary
@@ -412,7 +435,10 @@ async def reconcile_bug_topics(bot, group_id: str) -> list[str]:
             # Has a topic_id — verify it still exists
             if not await _topic_exists(bot, group_id, topic_id, _topic_name_for(bug)):
                 log.warning(f"Topic {topic_id} for {bug['bug_id']} is gone — recreating")
-                clear_bug_topic_id(bug['bug_id'])
+                # Same reasoning as create_bug_topic's asyncio.to_thread call above — this
+                # runs on the event loop (awaited straight from scheduler.py's nightly job),
+                # and clear_bug_topic_id now acquires _BUGS_LOCK.
+                await asyncio.to_thread(clear_bug_topic_id, bug['bug_id'])
                 fresh_bug = get_bug_by_id(bug['bug_id'])
                 try:
                     await create_bug_topic(fresh_bug)

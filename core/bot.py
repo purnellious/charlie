@@ -204,7 +204,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # is None for any reply/reply-all where 'to' was auto-derived rather
                 # than explicitly supplied (see BUG-025: this previously rendered as
                 # the literal string "Sent to None.").
-                resolved = send_email(
+                resolved = await asyncio.to_thread(
+                    send_email,
                     to=pending["to"], subject=pending["subject"],
                     body=pending["body"], thread_id=pending["thread_id"],
                     cc=pending.get("cc"), bcc=pending.get("bcc"),
@@ -233,7 +234,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             failures = []
             for thread_id in pending["thread_ids"]:
                 try:
-                    trash_thread(thread_id)
+                    await asyncio.to_thread(trash_thread, thread_id)
                 except Exception as e:
                     log.error(f"Delete failed for topic {topic_id}, thread {thread_id}: {e}")
                     failures.append(f"{thread_id}: {e}")
@@ -262,7 +263,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pending = PENDING_FORWARD_EMAIL.pop(topic_id)
             try:
                 from core.tools.email.fetch import forward_email
-                forward_email(
+                await asyncio.to_thread(
+                    forward_email,
                     thread_id=pending["thread_id"], to=pending["to"],
                     gmail_message_id=pending.get("gmail_message_id"),
                     cc=pending.get("cc"), bcc=pending.get("bcc"),
@@ -468,19 +470,19 @@ async def _run_charlie_turn(update, context, topic_id: int, user_text: str):
     proposed_send = proposals.get("send_email")
     if proposed_send:
         PENDING_SEND_EMAIL[topic_id] = proposed_send
-        await send_and_save_chunked(context.bot, topic_id, _send_email_proposal_text(proposed_send))
+        await send_and_save_chunked(context.bot, topic_id, await asyncio.to_thread(_send_email_proposal_text, proposed_send))
 
     # Handle a proposed delete
     proposed_delete = proposals.get("delete_email")
     if proposed_delete:
         PENDING_DELETE_EMAIL[topic_id] = proposed_delete
-        await send_and_save(context.bot, topic_id, _delete_email_proposal_text(proposed_delete))
+        await send_and_save(context.bot, topic_id, await asyncio.to_thread(_delete_email_proposal_text, proposed_delete))
 
     # Handle a proposed forward
     proposed_forward = proposals.get("forward_email")
     if proposed_forward:
         PENDING_FORWARD_EMAIL[topic_id] = proposed_forward
-        await send_and_save_chunked(context.bot, topic_id, _forward_email_proposal_text(proposed_forward))
+        await send_and_save_chunked(context.bot, topic_id, await asyncio.to_thread(_forward_email_proposal_text, proposed_forward))
 
 
 async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -589,17 +591,17 @@ async def on_meta_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         proposed_send = proposals.get("send_email")
         if proposed_send:
             PENDING_SEND_EMAIL[topic_id] = proposed_send
-            await send_and_save_chunked(context.bot, topic_id, _send_email_proposal_text(proposed_send))
+            await send_and_save_chunked(context.bot, topic_id, await asyncio.to_thread(_send_email_proposal_text, proposed_send))
 
         proposed_delete = proposals.get("delete_email")
         if proposed_delete:
             PENDING_DELETE_EMAIL[topic_id] = proposed_delete
-            await send_and_save(context.bot, topic_id, _delete_email_proposal_text(proposed_delete))
+            await send_and_save(context.bot, topic_id, await asyncio.to_thread(_delete_email_proposal_text, proposed_delete))
 
         proposed_forward = proposals.get("forward_email")
         if proposed_forward:
             PENDING_FORWARD_EMAIL[topic_id] = proposed_forward
-            await send_and_save_chunked(context.bot, topic_id, _forward_email_proposal_text(proposed_forward))
+            await send_and_save_chunked(context.bot, topic_id, await asyncio.to_thread(_forward_email_proposal_text, proposed_forward))
     except Exception as e:
         log.error(f"Charlie's take failed for topic {topic_id}: {e}")
         await send_and_save(context.bot, topic_id, f"Charlie's take failed: {e}")

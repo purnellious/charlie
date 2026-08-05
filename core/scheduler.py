@@ -120,8 +120,9 @@ async def _send_news_briefing(app: Application, is_retry: bool = False):
     topic_name = f"News — {datetime.now().strftime('%d %b')}"
 
     try:
+        import asyncio
         from core.tools.news import generate_briefing
-        briefing = generate_briefing()
+        briefing = await asyncio.to_thread(generate_briefing)
 
         forum_topic = await app.bot.create_forum_topic(
             chat_id=group_id,

@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -17,6 +18,14 @@ log = logging.getLogger(__name__)
 
 DB_PATH = Path(__file__).parent.parent.parent / "data" / "news.db"
 MODEL = "claude-haiku-4-5-20251001"  # Haiku is fine for summarisation — save Sonnet for Charlie
+
+# generate_briefing()'s read-unshown-then-mark-shown pattern (below) has no locking of its
+# own; before it was invoked via asyncio.to_thread (BUG-019), the single event loop thread
+# made the noon scheduler job and a live get_news_briefing request mutually exclusive by
+# accident. Running them on real OS threads makes it possible for both to read the same
+# "unshown" articles before either marks them shown, delivering duplicate news content
+# twice. This lock restores that mutual exclusion explicitly.
+_BRIEFING_LOCK = threading.Lock()
 
 _DEFAULT_SOURCES = [
     ("BBC World",          "http://feeds.bbci.co.uk/news/world/rss.xml",              "World News"),
@@ -214,43 +223,53 @@ def generate_briefing() -> str:
     Called by the get_news_briefing tool handler and the noon scheduler job.
     Uses Haiku internally for summarisation; returns clean text for Charlie to relay.
     """
-    init_db()
-    _fetch_all_feeds()
+    # A prior version of this fix moved init_db()/_fetch_all_feeds() outside this lock to
+    # reduce contention (fetching itself doesn't touch the shown/unshown state). That
+    # reintroduced a worse race than the one this lock exists to prevent: with the fetch
+    # unlocked, a second concurrent caller's lock turn could consume the very articles this
+    # call just fetched before this call reaches _get_unshown_articles(), leaving this call
+    # to report "No new articles" even though it's the one that fetched them — a fetch
+    # result silently stolen by another caller, not just delayed. Keeping the whole
+    # fetch-through-mark-shown span under one lock guarantees a caller always reads back
+    # its own fetch atomically, at the cost of a second caller waiting out the fetch too.
+    with _BRIEFING_LOCK:
+        init_db()
+        _fetch_all_feeds()
 
-    articles_by_topic = _get_unshown_articles(hours=24)
-    if not any(articles_by_topic.values()):
-        return "No new articles since the last briefing."
+        articles_by_topic = _get_unshown_articles(hours=24)
+        if not any(articles_by_topic.values()):
+            return "No new articles since the last briefing."
 
-    articles_context = _format_articles_for_prompt(articles_by_topic)
-    today_str = date.today().strftime("%A, %-d %B %Y")
+        articles_context = _format_articles_for_prompt(articles_by_topic)
+        today_str = date.today().strftime("%A, %-d %B %Y")
 
-    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=1000,
-        system=(
-            f"Today is {today_str}. Generate a concise news briefing from the articles provided. "
-            "For each topic, select the 3–5 most important articles. "
-            "For 'Crypto Regulation' and 'AI Regulation', only include articles specifically about "
-            "regulation, policy, or law — skip general crypto/AI news. "
-            "Format:\n\nTOPIC NAME\n1. Headline — one-line summary (max 20 words)\n2. Headline — summary\n\n"
-            "Rules: omit topics with no relevant articles. Plain text only. No markdown. "
-            "Keep summaries tight and factual. Do not include source names."
-        ),
-        messages=[{"role": "user", "content": f"Articles:\n{articles_context}"}],
-    )
+        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=1000,
+            system=(
+                f"Today is {today_str}. Generate a concise news briefing from the articles provided. "
+                "For each topic, select the 3–5 most important articles. "
+                "For 'Crypto Regulation' and 'AI Regulation', only include articles specifically about "
+                "regulation, policy, or law — skip general crypto/AI news. "
+                "Format:\n\nTOPIC NAME\n1. Headline — one-line summary (max 20 words)\n2. Headline — summary\n\n"
+                "Rules: omit topics with no relevant articles. Plain text only. No markdown. "
+                "Keep summaries tight and factual. Do not include source names."
+            ),
+            messages=[{"role": "user", "content": f"Articles:\n{articles_context}"}],
+        )
 
-    briefing_text = next(
-        (block.text.strip() for block in response.content if hasattr(block, "text")),
-        ""
-    )
-    if not briefing_text:
-        return "Could not generate news briefing."
+        briefing_text = next(
+            (block.text.strip() for block in response.content if hasattr(block, "text")),
+            ""
+        )
+        if not briefing_text:
+            return "Could not generate news briefing."
 
-    all_ids = [a["id"] for articles in articles_by_topic.values() for a in articles]
-    _mark_shown(all_ids)
+        all_ids = [a["id"] for articles in articles_by_topic.values() for a in articles]
+        _mark_shown(all_ids)
 
-    return f"News Briefing — {today_str}\n\n{briefing_text}"
+        return f"News Briefing — {today_str}\n\n{briefing_text}"
 
 
 # ---------------------------------------------------------------------------

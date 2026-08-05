@@ -880,7 +880,8 @@ async def handle_turn(
             elif block.name == "log_bug":
                 from core.tools.bugs import create_bug_entry, create_bug_topic, get_bug_by_id
                 try:
-                    bug_id = create_bug_entry(
+                    bug_id = await asyncio.to_thread(
+                        create_bug_entry,
                         title=block.input.get("title", ""),
                         type=block.input.get("type", "Bug"),
                         priority=block.input.get("priority", "Medium"),
@@ -911,7 +912,7 @@ async def handle_turn(
                     elif bug.get("status") == "Closed":
                         result = f"{bug_id} is already closed."
                     else:
-                        close_bug(bug_id, resolution)
+                        await asyncio.to_thread(close_bug, bug_id, resolution)
                         result = f"{bug_id} marked as resolved. You can now close the topic and run /distil."
                 except Exception as e:
                     result = f"resolve_bug failed: {e}"
@@ -939,7 +940,7 @@ async def handle_turn(
             elif block.name == "get_news_briefing":
                 await send_fn("Fetching the news...")
                 from core.tools.news import tool_get_news_briefing
-                result = tool_get_news_briefing()
+                result = await asyncio.to_thread(tool_get_news_briefing)
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
@@ -981,7 +982,8 @@ async def handle_turn(
                 from core.tools.email.fetch import search_emails
                 has_content = False
                 try:
-                    matches = search_emails(
+                    matches = await asyncio.to_thread(
+                        search_emails,
                         query=block.input.get("query", ""),
                         max_results=block.input.get("max_results", 10),
                     )
@@ -1009,7 +1011,7 @@ async def handle_turn(
                 from core.tools.email.fetch import get_thread_content
                 has_content = False
                 try:
-                    result = get_thread_content(block.input.get("thread_id", ""))
+                    result = await asyncio.to_thread(get_thread_content, block.input.get("thread_id", ""))
                     if not result:
                         result = "Thread not found or empty."
                     else:
@@ -1048,7 +1050,7 @@ async def handle_turn(
             elif block.name == "archive_email":
                 from core.tools.email.fetch import archive_thread
                 try:
-                    archive_thread(block.input.get("thread_id", ""))
+                    await asyncio.to_thread(archive_thread, block.input.get("thread_id", ""))
                     result = "Archived."
                 except Exception as e:
                     result = f"Could not archive: {e}"
@@ -1057,7 +1059,7 @@ async def handle_turn(
             elif block.name == "mark_email_read":
                 from core.tools.email.fetch import mark_thread_read
                 try:
-                    mark_thread_read(block.input.get("thread_id", ""))
+                    await asyncio.to_thread(mark_thread_read, block.input.get("thread_id", ""))
                     result = "Marked as read."
                 except Exception as e:
                     result = f"Could not mark as read: {e}"
@@ -1066,7 +1068,7 @@ async def handle_turn(
             elif block.name == "mark_email_unread":
                 from core.tools.email.fetch import mark_thread_unread
                 try:
-                    mark_thread_unread(block.input.get("thread_id", ""))
+                    await asyncio.to_thread(mark_thread_unread, block.input.get("thread_id", ""))
                     result = "Marked as unread."
                 except Exception as e:
                     result = f"Could not mark as unread: {e}"
