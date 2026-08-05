@@ -911,6 +911,7 @@ TBD — pending the decision above. Not a "wrap in asyncio.to_thread" fix like B
 **Blocks anything current:** No
 **Rough effort:** Small
 **Logged:** 2026-08-05
+**Topic ID:** 2906
 
 **Problem:**
 TestA
