@@ -824,7 +824,7 @@ Live-verified, not just deployed: Jonathan replied to a thread through Charlie; 
 ## BUG-033 — forward_email's HTML note loses line breaks
 
 **Type:** Bug
-**Status:** Closed
+**Status:** Open (fix built, needs live verification)
 **Priority:** Low
 **Severity:** Low — cosmetic only, plain-text part was always correct; the HTML part (what most recipients actually see) collapsed a multi-line note into one line
 **Blocks anything current:** No
@@ -838,7 +838,7 @@ Jonathan noticed a forwarded email's note — shown with line breaks in Charlie'
 **What needs fixing:**
 Convert the note's line breaks to `<br>` before embedding it in the HTML part, matching the pattern already used for the reply body.
 
-**Resolved:** 2026-08-05 — one-line fix: `html.escape(note).replace(chr(10), '<br>')` instead of `html.escape(note)` alone. Verified with a mocked multi-line note — the HTML part now renders `Hi Jonathan<br><br>You might find this interesting.<br><br>Kind regards,<br>Jonathan`; the plain-text part (always correct) is unaffected.
+**Resolved (pending live verification):** 2026-08-05 — one-line fix: `html.escape(note).replace(chr(10), '<br>')` instead of `html.escape(note)` alone. Verified with a mocked multi-line note — the HTML part now renders `Hi Jonathan<br><br>You might find this interesting.<br><br>Kind regards,<br>Jonathan`; the plain-text part (always correct) is unaffected. Low technical risk (pure string handling, no Gmail-side ambiguity like BUG-031/032 had), but staying consistent with this session's standard — stays open until Jonathan forwards something with a multi-line note through Charlie and confirms it renders with the line breaks intact.
 
 **Touches:**
 `core/tools/email/fetch.py` (`forward_email`)
