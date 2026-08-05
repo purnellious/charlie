@@ -420,20 +420,29 @@ TOOLS = [
     {
         "name": "propose_delete_email",
         "description": (
-            "Propose deleting (trashing) an email thread. This NEVER deletes immediately — "
-            "Jonathan is shown what's being deleted and it only proceeds if he replies with "
-            "the literal phrase 'delete it' in a separate message. Don't restate the proposal "
-            "yourself in text — the tool's own confirmation message is the only preview he "
-            "needs. Trashing is reversible for 30 days (Gmail's own trash retention), never "
-            "permanent. Only call this when Jonathan has explicitly asked."
+            "Propose deleting (trashing) one or more email threads. This NEVER deletes "
+            "immediately — Jonathan is shown what's being deleted and it only proceeds if he "
+            "replies with the literal phrase 'delete it' in a separate message, which then "
+            "deletes every thread in the list. Don't restate the proposal yourself in text — "
+            "the tool's own confirmation message is the only preview he needs. Trashing is "
+            "reversible for 30 days (Gmail's own trash retention), never permanent. Only call "
+            "this when Jonathan has explicitly asked. When he asks to delete several emails "
+            "(e.g. 'batch delete the junk'), pass all of their thread_ids together in one call "
+            "— do not call this once per email, since only the most recent call's proposal is "
+            "kept and earlier ones are silently discarded."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "thread_id": {"type": "string", "description": "Gmail thread_id to delete."},
+                "thread_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "description": "Gmail thread_id(s) to delete — all of them in one call for a batch delete.",
+                },
                 "reason": {"type": "string", "description": "Brief context, e.g. what Jonathan asked for."},
             },
-            "required": ["thread_id", "reason"],
+            "required": ["thread_ids", "reason"],
         },
     },
     {
@@ -571,7 +580,10 @@ confirmed and you've seen the result — these are proposals, not actions. The t
 Jonathan the only preview he needs (grounded in the real email, not your paraphrase) — do not \
 also describe the proposal yourself in a preceding or following text block; that just makes \
 him read the same thing twice. If something required (like a recipient) is missing, ask for \
-everything you still need in one message rather than one field at a time.
+everything you still need in one message rather than one field at a time. \
+propose_delete_email takes a list of thread_ids — when Jonathan asks to delete several emails \
+at once (e.g. "batch delete the junk"), pass all of them in a single call so one "delete it" \
+reply deletes the whole batch; calling it once per email only keeps the last one.
 
 **Capabilities boundary:** You run exclusively on Jonathan's always-on Mac (10.0.0.119). \
 You cannot directly access or execute anything on his main Mac. If Jonathan asks you to do \
@@ -851,13 +863,17 @@ async def handle_turn(
 
             elif block.name == "propose_delete_email":
                 proposed_delete_email = {
-                    "thread_id": block.input.get("thread_id", ""),
+                    "thread_ids": block.input.get("thread_ids", []),
                     "reason": block.input.get("reason", ""),
                 }
+                count = len(proposed_delete_email["thread_ids"])
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
-                    "content": "Delete proposed. It will only delete if Jonathan replies 'delete it'.",
+                    "content": (
+                        f"Delete proposed ({count} thread{'s' if count != 1 else ''}). "
+                        f"It will only delete if Jonathan replies 'delete it'."
+                    ),
                 })
                 suppress_text = True
 

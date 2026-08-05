@@ -753,7 +753,7 @@ TBD
 
 ## BUG-030 — Email deletions falsely reported as successful when they didn't execute
 **Type:** Bug
-**Status:** Open
+**Status:** In Progress — fix implemented, not yet closed (see note below)
 **Priority:** High
 **Severity:** High — Charlie tells Jonathan emails were deleted when they weren't, giving false confidence
 **Blocks anything current:** No
@@ -764,11 +764,20 @@ TBD
 **Problem:**
 When Jonathan confirmed batch email deletions with "delete it", the chat showed "Deleted (moved to Trash — recoverable for 30 days)" but a subsequent inbox search confirmed all 7 emails were still present. The deletion confirmations were false positives. Same may apply to earlier individual deletions in this session.
 
-**What needs fixing:**
-Investigate propose_delete_email and the "delete it" confirmation handler in bot.py — determine whether the Gmail API trash call is actually being made, whether errors are being swallowed silently, and whether the confirmation message is being sent before verifying the API call succeeded. Add proper error handling and only report success after a confirmed API response.
+**Root cause, confirmed 2026-08-05 (found via a fresh repro — Jonathan asked to batch-delete 4 "delete candidates" from a digest, confirmed once, and only the Amtrak email was actually deleted):** the whole delete pipeline was single-item at every layer, despite Charlie describing the action as a "batch delete":
+1. `propose_delete_email`'s tool schema (`core/agent.py`) only accepted one `thread_id` — no way to pass a list.
+2. `handle_turn()` stored the proposal in a single variable, not a list — if Charlie called the tool once per email (the only option available), each call silently overwrote the previous one.
+3. `PENDING_DELETE_EMAIL` in `bot.py` was `dict[int, dict]` — one pending delete per topic, not a queue.
+4. The "delete it" handler popped exactly one pending dict and trashed exactly one thread.
+
+So a single "delete it" only ever deleted whichever email was proposed *last* (silently discarding the rest) — `trash_thread()` itself has no swallowed-error path (a bare `.execute()` that raises normally, and the handler's existing try/except already reported real failures), so the false-positive read was really "N-1 of N were never even proposed," not a lie about the one that did execute. This matches this bug's original 7-email report closely enough (only the final proposed thread would've actually gone to Trash) to treat as the same root cause rather than a separate one — no other error-swallowing path was found in `trash_thread`/the confirm handler during this investigation.
+
+**Fix implemented, 2026-08-05 (not yet closed):** made the pipeline genuinely list-based instead of single-item: `propose_delete_email`'s schema now takes `thread_ids: string[]` (tool description explicitly tells Charlie to pass every id in one call for a batch, not one call per email); `PENDING_DELETE_EMAIL` holds `{"thread_ids": [...], "reason": ...}`; `_delete_email_proposal_text()` fetches and lists a fresh Gmail summary per thread (one bad id doesn't blank the rest of the preview); the "delete it" handler loops `trash_thread()` over every id, collecting per-thread failures independently and reporting "Deleted M/N... Failed: ..." rather than a blanket success — so a partial failure can never again be reported as if the whole batch succeeded. Single-item deletes still work unchanged (a one-element list). Dry-run verified locally against mocked `get_thread_summary`/`trash_thread` (all-succeed, single-item, and partial-failure cases) since this repo has no test suite.
+
+**Deliberately left open:** this is a Tier 3 build (deletes data) per `principles.md` — closing requires a live end-to-end test with confirmed output, not just a local dry-run against mocks. That means deploying to the always-on Mac and Jonathan actually confirming a real batch delete via Telegram, then verifying via the Gmail API (not just eyeballing the chat) that every thread in the batch actually landed in Trash. Do not mark this Closed until that's done — per past bug-closure mistakes in this log, documentation of a fix is not the same as proof it works.
 
 **Touches:**
-TBD
+`core/agent.py` (`propose_delete_email` schema + dispatch + system prompt), `core/bot.py` (`PENDING_DELETE_EMAIL`, `_delete_email_proposal_text`, the "delete it" handler)
 
 ---
 

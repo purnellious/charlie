@@ -229,13 +229,25 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response_lower = user_text.strip().lower()
         if response_lower == "delete it":
             pending = PENDING_DELETE_EMAIL.pop(topic_id)
-            try:
-                from core.tools.email.fetch import trash_thread
-                trash_thread(pending["thread_id"])
-                await send_and_save(context.bot, topic_id, "Deleted (moved to Trash — recoverable for 30 days)." + _other_pending_note(topic_id, "delete_email"))
-            except Exception as e:
-                log.error(f"Delete failed for topic {topic_id}: {e}")
-                await send_and_save(context.bot, topic_id, f"Delete failed: {e}" + _other_pending_note(topic_id, "delete_email"))
+            from core.tools.email.fetch import trash_thread
+            failures = []
+            for thread_id in pending["thread_ids"]:
+                try:
+                    trash_thread(thread_id)
+                except Exception as e:
+                    log.error(f"Delete failed for topic {topic_id}, thread {thread_id}: {e}")
+                    failures.append(f"{thread_id}: {e}")
+            total = len(pending["thread_ids"])
+            deleted = total - len(failures)
+            if not failures:
+                summary = "Deleted (moved to Trash — recoverable for 30 days)." if total == 1 \
+                    else f"Deleted all {total} (moved to Trash — recoverable for 30 days)."
+            else:
+                summary = (
+                    f"Deleted {deleted}/{total} (moved to Trash — recoverable for 30 days). "
+                    f"Failed:\n" + "\n".join(f"- {f}" for f in failures)
+                )
+            await send_and_save(context.bot, topic_id, summary + _other_pending_note(topic_id, "delete_email"))
             return
         elif response_lower in ("cancel", "no", "stop", "discard"):
             PENDING_DELETE_EMAIL.pop(topic_id)
@@ -368,14 +380,20 @@ def _delete_email_proposal_text(p: dict) -> str:
     # Grounds the preview in a real, freshly-fetched sender/subject rather than trusting
     # only the model's free-text `reason` for what's being deleted. Reason stays on its own
     # line here (unlike send/forward) — there's no body or note to carry the "why" instead.
-    try:
-        from core.tools.email.fetch import get_thread_summary
-        summary = get_thread_summary(p["thread_id"])
-        target = f"{summary['sender_name']} <{summary['sender_email']}> — {summary['subject']}"
-    except Exception as e:
-        target = f"(could not fetch thread details: {e})"
+    # Each thread is looked up independently so one bad thread_id doesn't blank the whole
+    # preview — Jonathan still sees what's fine to delete alongside what couldn't be found.
+    from core.tools.email.fetch import get_thread_summary
+    targets = []
+    for thread_id in p["thread_ids"]:
+        try:
+            summary = get_thread_summary(thread_id)
+            targets.append(f"{summary['sender_name']} <{summary['sender_email']}> — {summary['subject']}")
+        except Exception as e:
+            targets.append(f"(could not fetch thread {thread_id}: {e})")
+    deleting = "\n".join(f"- {t}" for t in targets) if len(targets) > 1 else targets[0]
+    label = "Deleting" if len(targets) == 1 else f"Deleting {len(targets)} threads"
     return (
-        f"Deleting: {target} (moved to Trash, recoverable for 30 days)\n\n"
+        f"{label} (moved to Trash, recoverable for 30 days):\n{deleting}\n\n"
         f"{p['reason']}\n\n"
         f"Reply 'delete it' to delete, or 'cancel' to discard."
     )
