@@ -771,3 +771,26 @@ Investigate propose_delete_email and the "delete it" confirmation handler in bot
 TBD
 
 ---
+
+## BUG-031 — forward_email breaks the thread chain (sends as an unrelated new message)
+**Type:** Bug
+**Status:** Open
+**Priority:** Medium
+**Severity:** Medium — the forwarded copy doesn't group with the original conversation in Jonathan's own Sent/All Mail, unlike a real Gmail forward; content/formatting/attachments themselves are unaffected (that was BUG-027, already resolved)
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-08-05
+**Topic ID:** TBD — no Telegram topic yet, logged directly via Claude Code; run /createbugtopics to backfill
+
+**Problem:**
+Jonathan forwarded the same email two ways — once through Charlie, once manually in Gmail — and compared them directly. The manual forward grouped with the original thread in his mailbox; Charlie's did not. `forward_email()` (`core/tools/email/fetch.py`) was built to explicitly send the forward as a brand-new message with no `threadId` and no `References`/`In-Reply-To` to the original — a deliberate choice documented directly in its own docstring at the time (distinct from BUG-027, which fixed the forward losing formatting/attachments, not this). Living with it, that choice reads as the forward "breaking the chain" rather than a real forward.
+
+**What needs fixing:**
+Set `threadId` on the `messages().send()` call to the original thread, and set `In-Reply-To`/`References` to the original message's real RFC822 `Message-ID` header — matching how `send_email()` already threads replies, and matching what Gmail's own "Forward" button does under the hood.
+
+**Resolved (pending live verification):** 2026-08-05 — `get_forward_preview()` now also returns the forwarded message's `Message-ID` header; `forward_email()` sets `threadId` + `In-Reply-To`/`References` from it before sending. Only affects grouping in Jonathan's own mailbox (Sent/All Mail) — the recipient's client never saw the original Message-ID, so nothing changes on their end. Not yet confirmed against a real send — Gmail's own documented threading criteria (matching References/In-Reply-To, and reportedly Subject) aren't something that can be verified without an actual live forward+reply, so this stays open until Jonathan re-runs the same manual-vs-Charlie comparison and confirms it groups correctly.
+
+**Touches:**
+`core/tools/email/fetch.py` (`get_forward_preview`, `forward_email`)
+
+---

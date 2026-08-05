@@ -771,6 +771,9 @@ def get_forward_preview(thread_id: str, gmail_message_id: str | None = None) -> 
         "attachments": attachments,
         "body": _extract_body(payload).strip(),
         "html_body": _extract_html_body(payload),
+        # RFC822 Message-ID of the message being forwarded — used by forward_email() to
+        # thread the forwarded copy the same way Gmail's own "Forward" does (see BUG-031).
+        "message_id": headers.get("Message-ID", ""),
     }
 
 
@@ -780,10 +783,13 @@ def forward_email(
 ) -> None:
     """
     Forwards a specific message in a thread (or the most recent, if gmail_message_id is
-    omitted — see get_forward_preview) including attachments, to to/cc/bcc, as a
-    brand-new message — no threadId, no References to the original Message-ID (explicit
-    choice: the new recipient isn't part of the original conversation; the tradeoff is
-    the forwarded copy won't visually group with the original thread in Sent/All Mail).
+    omitted — see get_forward_preview) including attachments, to to/cc/bcc. Threaded onto
+    the original conversation via threadId + In-Reply-To/References to the original
+    Message-ID (BUG-031) — matching what Gmail's own "Forward" button does, so the
+    forwarded copy visually groups with the original thread in Sent/All Mail instead of
+    looking like an unrelated new message. This only affects grouping in Jonathan's own
+    mailbox — the recipient's client has never seen the original Message-ID, so it has
+    nothing to thread against and just sees a standalone message either way.
 
     Preserves the original message's real HTML formatting when it has one (BUG-027) —
     sent as multipart/alternative (plain-text fallback + the original HTML, wrapped in a
@@ -924,7 +930,14 @@ def forward_email(
         part.add_header("Content-Disposition", "attachment", filename=filename)
         msg.attach(part)
 
-    body_dict = {"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}
+    if preview.get("message_id"):
+        msg["In-Reply-To"] = preview["message_id"]
+        msg["References"] = preview["message_id"]
+
+    body_dict = {
+        "raw": base64.urlsafe_b64encode(msg.as_bytes()).decode(),
+        "threadId": thread_id,
+    }
     service.users().messages().send(userId="me", body=body_dict).execute()
 
 
