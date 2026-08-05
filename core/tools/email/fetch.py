@@ -326,6 +326,64 @@ def _find_body_insertion_point(html_body: str) -> int | None:
     return parser.body_end_offset
 
 
+class _BodyEndTagFinder(HTMLParser):
+    """
+    Finds the true structural closing </body> or </html> tag's START offset (whichever
+    comes first) using a real HTML tokenizer, not a regex — same reasoning as
+    _BodyTagFinder, mirrored for the closing side: a naive text search for "</body>"
+    could match one embedded inside a <script> string or HTML comment, truncating
+    genuine quoted content early rather than exposing a disclosure-hiding bypass (the
+    direction _BodyTagFinder guards against) — a correctness risk here, not a spoofing
+    one, since _extract_body_inner_html's only caller places it last, after the reply's
+    own already-escaped text, with nothing legitimate positioned after it to blend into.
+
+    Same single-feed()-call constraint as _BodyTagFinder, for the same reason.
+    """
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self.end_offset = None
+        self._saw_target_this_tag = False
+        self._fed = False
+
+    def feed(self, data):
+        if self._fed:
+            raise RuntimeError("_BodyEndTagFinder must be fed exactly once, in a single feed() call.")
+        self._fed = True
+        super().feed(data)
+
+    def handle_endtag(self, tag):
+        if tag.lower() in ("body", "html") and self.end_offset is None:
+            self._saw_target_this_tag = True
+
+    def parse_endtag(self, i):
+        self._saw_target_this_tag = False
+        endpos = super().parse_endtag(i)
+        if self._saw_target_this_tag and self.end_offset is None and endpos != -1:
+            self.end_offset = i
+        return endpos
+
+
+def _extract_body_inner_html(html_body: str) -> str:
+    """
+    The original message's HTML with its outer document wrapper (<html>/<head>/<body>
+    tags) stripped, leaving just the actual visible content — needed to nest an original
+    full HTML document inside a reply's <blockquote> without producing an invalid nested
+    <html>/<head>/<body> inside another document. Falls back to the untouched input on
+    any parsing failure or on a bare fragment with no <body> tag (nothing to strip).
+    """
+    start = _find_body_insertion_point(html_body)
+    if start is None:
+        return html_body
+    parser = _BodyEndTagFinder()
+    try:
+        parser.feed(html_body)
+        parser.close()
+    except Exception:
+        return html_body[start:]
+    end = parser.end_offset if parser.end_offset is not None else len(html_body)
+    return html_body[start:end]
+
+
 def _strip_quoted_content(body: str) -> str:
     """Keep only the most recent message — strip everything from the first quote marker down."""
     lines = body.splitlines()
@@ -699,16 +757,62 @@ def send_email(
     (matching Gmail's documented requirements) and prefixes the subject with "Re: "
     (unless already present).
 
+    When thread_id is given, also appends a quote of the message being replied to below
+    `body` — "On {date}, {sender} wrote:" plus the original content — the same "same
+    functionality as forward" fidelity forward_email already has for BUG-027: preserves
+    the original's real HTML formatting when it has one (multipart/alternative, the
+    original nested inside a <blockquote> via _extract_body_inner_html), falling back to
+    a plain "> "-prefixed quote otherwise. A failure fetching the quote content doesn't
+    block the reply — it still sends, just without a quote.
+
     Returns the resolved {"to", "subject", "cc", "bcc", "message_id"} dict — callers
     building a post-send confirmation message must use this return value, not whatever
     raw `to`/`cc`/`bcc` they originally passed in (which may be None/empty for a reply
     or reply-all where the real recipient was auto-derived, not supplied) — see BUG-025.
     """
+    from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
     resolved = resolve_send_recipients(thread_id, to, subject, cc, bcc, reply_all)
 
-    msg = MIMEText(body)
+    quote_preview = None
+    if thread_id:
+        try:
+            quote_preview = get_forward_preview(thread_id)
+        except Exception as e:
+            log.warning(f"send_email: could not fetch quote content for thread {thread_id}: {e}")
+
+    if quote_preview:
+        quote_header = (
+            f"On {quote_preview['date']}, {quote_preview['sender_name']} "
+            f"<{quote_preview['sender_email']}> wrote:"
+        )
+        quoted_plain = "\n".join(f"> {line}" for line in quote_preview["body"].splitlines())
+        full_plain_body = f"{body}\n\n{quote_header}\n{quoted_plain}".rstrip() if quoted_plain else f"{body}\n\n{quote_header}"
+    else:
+        full_plain_body = body
+
+    if quote_preview and quote_preview.get("html_body"):
+        reply_html = html.escape(body).replace("\n", "<br>")
+        quote_header_html = (
+            f"On {html.escape(quote_preview['date'])}, "
+            f"<b>{html.escape(quote_preview['sender_name'])}</b> "
+            f"&lt;{html.escape(quote_preview['sender_email'])}&gt; wrote:"
+        )
+        inner_html = _extract_body_inner_html(quote_preview["html_body"])
+        full_html_body = (
+            f"<div>{reply_html}</div><br>"
+            f"<div>{quote_header_html}</div>"
+            f'<blockquote style="margin:0 0 0 .8ex;border-left:1px solid #ccc;padding-left:1ex;">'
+            f"{inner_html}"
+            f"</blockquote>"
+        )
+        msg = MIMEMultipart("alternative")
+        msg.attach(MIMEText(full_plain_body, "plain"))
+        msg.attach(MIMEText(full_html_body, "html"))
+    else:
+        msg = MIMEText(full_plain_body)
+
     msg["To"] = resolved["to"]
     msg["Subject"] = resolved["subject"]
     if resolved["cc"]:

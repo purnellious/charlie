@@ -309,8 +309,10 @@ def _send_email_proposal_text(p: dict) -> str:
         bcc_display = p.get("bcc") or ""
         error_note = f"\n\n(Could not resolve recipients: {e})"
 
-    kind = "Replying to" if p.get("thread_id") else "Emailing"
-    lines = [f"{kind} {to_display} — {subject_display}"]
+    thread_id = p.get("thread_id")
+    kind = "Replying to" if thread_id else "Emailing"
+    quote_note = " (includes the quoted original below it)" if thread_id else ""
+    lines = [f"{kind} {to_display} — {subject_display}{quote_note}"]
     if cc_display:
         cc_count = len([a for _, a in getaddresses([cc_display]) if a])
         count_note = f" ({cc_count} people)" if p.get("reply_all") and cc_count > 1 else ""

@@ -794,3 +794,27 @@ Set `threadId` on the `messages().send()` call to the original thread, and set `
 `core/tools/email/fetch.py` (`get_forward_preview`, `forward_email`)
 
 ---
+
+## BUG-032 — send_email replies don't quote the original message
+
+**Type:** Bug
+**Status:** Open (fix built, needs live verification)
+**Priority:** Medium
+**Severity:** Medium — a Charlie reply threads correctly (BUG-031's fix, plus reply already had `threadId`/`References`) but the recipient sees only the new text, with no quoted original below it the way a normal client reply shows
+**Blocks anything current:** No
+**Rough effort:** Medium
+**Logged:** 2026-08-05
+**Topic ID:** TBD — no Telegram topic yet, logged directly via Claude Code; run /createbugtopics to backfill
+
+**Problem:**
+Jonathan replied to the same thread twice — once directly from Gmail, once through Charlie — and compared them. Both threaded correctly (BUG-031 was specifically about forward, not this), but Charlie's reply body was only the new text; a normal client reply also appends "On {date}, {sender} wrote:" plus the quoted original below. `send_email()` built the message as a bare `MIMEText(body)` — literally just the raw reply text, no quote of any kind, for either plain or HTML mail. Jonathan asked for reply to have the same quoting fidelity forward already has (BUG-027): plain-text fallback always, real HTML preservation when the original has one.
+
+**What needs fixing:**
+Append a quote of the message being replied to below `body`, matching forward's approach — original HTML preserved and nested in a `<blockquote>` when present (needs the original's outer `<html>`/`<head>`/`<body>` wrapper stripped first, since nesting a second full document inside a blockquote is invalid), plain `"> "`-prefixed quote otherwise.
+
+**Resolved (pending live verification):** 2026-08-05 — `send_email()` now fetches the replied-to message via the existing `get_forward_preview()` (same one `forward_email` uses) and appends `"On {date}, {sender} wrote:"` plus the quote below `body`. New `_BodyEndTagFinder`/`_extract_body_inner_html` (mirrors `_BodyTagFinder`/`_find_body_insertion_point`, same real-tokenizer approach rather than a regex — here to avoid truncating genuine quoted content that happens to contain a `</body>`-shaped string in a comment/script, not a spoofing bypass like BUG-027's, since the reply's own trusted text is always escaped and placed before the untrusted quote, with nothing legitimate positioned after it to blend into) extracts just the original's inner content for nesting inside a `<blockquote>`. Sends `multipart/alternative` (plain quote always; HTML quote only when the original had `html_body`) instead of a bare `MIMEText`. A failure fetching the quote doesn't block the reply — it still sends, just without one. `bot.py`'s send preview now notes "(includes the quoted original below it)" for a reply, so the preview doesn't diverge from what's actually sent. Verified via mocked end-to-end tests (HTML quote, plain-only fallback, quote-fetch failure, fresh-compose unaffected) and 5 HTML-extraction edge cases (full document, bare fragment, comment-embedded spoof, missing closing tag, script-embedded fake `</body>`) — all correct. Not yet confirmed against a real reply+check in Gmail, so stays open until Jonathan does that.
+
+**Touches:**
+`core/tools/email/fetch.py` (`_BodyEndTagFinder`, `_extract_body_inner_html`, `send_email`), `core/bot.py` (`_send_email_proposal_text`)
+
+---
