@@ -774,7 +774,7 @@ TBD
 
 ## BUG-031 — forward_email breaks the thread chain (sends as an unrelated new message)
 **Type:** Bug
-**Status:** Open
+**Status:** Closed
 **Priority:** Medium
 **Severity:** Medium — the forwarded copy doesn't group with the original conversation in Jonathan's own Sent/All Mail, unlike a real Gmail forward; content/formatting/attachments themselves are unaffected (that was BUG-027, already resolved)
 **Blocks anything current:** No
@@ -788,7 +788,7 @@ Jonathan forwarded the same email two ways — once through Charlie, once manual
 **What needs fixing:**
 Set `threadId` on the `messages().send()` call to the original thread, and set `In-Reply-To`/`References` to the original message's real RFC822 `Message-ID` header — matching how `send_email()` already threads replies, and matching what Gmail's own "Forward" button does under the hood.
 
-**Resolved (pending live verification):** 2026-08-05 — `get_forward_preview()` now also returns the forwarded message's `Message-ID` header; `forward_email()` sets `threadId` + `In-Reply-To`/`References` from it before sending. Only affects grouping in Jonathan's own mailbox (Sent/All Mail) — the recipient's client never saw the original Message-ID, so nothing changes on their end. Not yet confirmed against a real send — Gmail's own documented threading criteria (matching References/In-Reply-To, and reportedly Subject) aren't something that can be verified without an actual live forward+reply, so this stays open until Jonathan re-runs the same manual-vs-Charlie comparison and confirms it groups correctly.
+**Resolved:** 2026-08-05 — `get_forward_preview()` now also returns the forwarded message's `Message-ID` header; `forward_email()` sets `threadId` + `In-Reply-To`/`References` from it before sending. Live-verified, not just deployed: Jonathan forwarded a real email (an Anthropic receipt, thread `19fd2a25a3a5744b`) to `purnelljonathan@gmail.com` through Charlie; fetched the thread directly via the Gmail API afterward (read-only, no reliance on eyeballing Gmail's UI) and confirmed the sent forward shares `threadId` with the original message, with `In-Reply-To`/`References` exactly matching the original's real `Message-ID`, and `Subject` correctly prefixed `Fwd:`. Same mechanism `send_email()` already used for replies. Only affects grouping in Jonathan's own mailbox (Sent/All Mail) — the recipient's client never saw the original Message-ID, so nothing changes on their end.
 
 **Touches:**
 `core/tools/email/fetch.py` (`get_forward_preview`, `forward_email`)
