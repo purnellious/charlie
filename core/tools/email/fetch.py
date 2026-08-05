@@ -566,16 +566,16 @@ def mark_thread_unread(thread_id: str) -> None:
 
 def get_thread_summary(thread_id: str) -> dict:
     """
-    Metadata-only fetch (From/Subject/Date/Message-ID/To/Cc headers) of a thread's most
-    recent message — cheap, no body. Grounds delete-confirmation previews in real fetched
-    data rather than the model's paraphrase, supplies the Message-ID needed for
-    send_email()'s reply threading, and supplies To/Cc needed for reply-all's recipient
-    derivation (resolve_send_recipients()).
+    Metadata-only fetch (From/Subject/Date/Message-ID/References/To/Cc headers) of a
+    thread's most recent message — cheap, no body. Grounds delete-confirmation previews
+    in real fetched data rather than the model's paraphrase, supplies the Message-ID/
+    References needed for send_email()'s reply threading, and supplies To/Cc needed for
+    reply-all's recipient derivation (resolve_send_recipients()).
     """
     service = _build_service()
     thread = service.users().threads().get(
         userId="me", id=thread_id, format="metadata",
-        metadataHeaders=["From", "Subject", "Date", "Message-ID", "To", "Cc"],
+        metadataHeaders=["From", "Subject", "Date", "Message-ID", "References", "To", "Cc"],
     ).execute()
     messages = sorted(thread.get("messages", []), key=lambda m: int(m.get("internalDate", 0)))
     if not messages:
@@ -588,6 +588,7 @@ def get_thread_summary(thread_id: str) -> dict:
         "sender_email": sender_email,
         "subject": headers.get("Subject", "(no subject)"),
         "message_id": headers.get("Message-ID"),
+        "references": headers.get("References", ""),
         "to_header": headers.get("To", ""),
         "cc_header": headers.get("Cc", ""),
     }
@@ -598,11 +599,12 @@ def resolve_send_recipients(
     cc: str | None, bcc: str | None, reply_all: bool,
 ) -> dict:
     """
-    Resolve the final To/Subject/Cc/Bcc (and, for a reply, the original Message-ID) for a
-    send — whether a fresh compose or a reply/reply-all within thread_id. This is the
-    single source of truth for that derivation: send_email() calls it at actual-send
-    time, and bot.py's proposal-text builder calls it at preview time, so the preview
-    Jonathan approves and what actually gets sent can never diverge.
+    Resolve the final To/Subject/Cc/Bcc (and, for a reply, the In-Reply-To Message-ID plus
+    the full References ancestor chain) for a send — whether a fresh compose or a
+    reply/reply-all within thread_id. This is the single source of truth for that
+    derivation: send_email() calls it at actual-send time, and bot.py's proposal-text
+    builder calls it at preview time, so the preview Jonathan approves and what actually
+    gets sent can never diverge.
 
     - Omitting `to` with `thread_id` set means "reply to the original sender."
     - `reply_all=True` (only meaningful with `thread_id`) merges the original To+Cc
@@ -622,6 +624,7 @@ def resolve_send_recipients(
     resolved_to = to.strip() if to and to.strip() else None
     resolved_subject = subject
     message_id = None
+    references = None
     explicit_cc_pairs = _parse_addr_list(cc)
 
     if thread_id:
@@ -633,6 +636,13 @@ def resolve_send_recipients(
         orig_subject = summary["subject"]
         resolved_subject = orig_subject if orig_subject.strip().lower().startswith("re:") else f"Re: {orig_subject}"
         message_id = summary.get("message_id")
+        # References must carry the FULL ancestor chain (RFC 5322), not just the immediate
+        # parent's Message-ID — the parent's own References plus its Message-ID. Matters
+        # for threads 3+ messages deep: a recipient client missing the immediate parent
+        # but holding an earlier ancestor still has something to thread against.
+        if message_id:
+            orig_references = (summary.get("references") or "").strip()
+            references = f"{orig_references} {message_id}".strip() if orig_references else message_id
 
         if not resolved_to:
             resolved_to = summary["sender_email"]
@@ -667,6 +677,7 @@ def resolve_send_recipients(
     return {
         "to": resolved_to, "subject": resolved_subject,
         "cc": resolved_cc, "bcc": resolved_bcc, "message_id": message_id,
+        "references": references,
     }
 
 
@@ -709,7 +720,7 @@ def send_email(
     if thread_id:
         if resolved["message_id"]:
             msg["In-Reply-To"] = resolved["message_id"]
-            msg["References"] = resolved["message_id"]
+            msg["References"] = resolved["references"]
         body_dict["threadId"] = thread_id
 
     body_dict["raw"] = base64.urlsafe_b64encode(msg.as_bytes()).decode()
