@@ -286,6 +286,10 @@ def _send_email_proposal_text(p: dict) -> str:
     # Grounds the preview in the real resolved recipients/subject rather than the model's
     # guess — resolve_send_recipients() is the SAME function send_email() calls at actual
     # send time, so this preview and the real send can never diverge.
+    #
+    # Only notable/non-default fields get their own line — Jonathan doesn't need "Bcc: none"
+    # or a restated Reason when the body already says why; he does need a heads-up when a
+    # reply-all is about to loop in several other people.
     from email.utils import getaddresses
     from core.tools.email.fetch import resolve_send_recipients
     try:
@@ -305,74 +309,72 @@ def _send_email_proposal_text(p: dict) -> str:
         bcc_display = p.get("bcc") or ""
         error_note = f"\n\n(Could not resolve recipients: {e})"
 
-    thread_note = " (reply within existing thread)" if p.get("thread_id") else " (new email)"
-    lines = [f"Proposed email to send{thread_note}", "", f"To: {to_display}"]
+    kind = "Replying to" if p.get("thread_id") else "Emailing"
+    lines = [f"{kind} {to_display} — {subject_display}"]
     if cc_display:
         cc_count = len([a for _, a in getaddresses([cc_display]) if a])
-        count_note = f" — {cc_count} recipient{'s' if cc_count != 1 else ''}" if p.get("reply_all") else ""
+        count_note = f" ({cc_count} people)" if p.get("reply_all") and cc_count > 1 else ""
         lines.append(f"Cc: {cc_display}{count_note}")
     if bcc_display:
         lines.append(f"Bcc: {bcc_display}")
-    lines += [
-        f"Subject: {subject_display}", "",
-        p.get("body", ""), "",
-        f"Reason: {p.get('reason', '')}", "",
-        "Reply 'send it' to send, or 'cancel' to discard.",
-    ]
+    lines += ["", p.get("body", ""), "", "Reply 'send it' to send, or 'cancel' to discard."]
     return "\n".join(lines) + error_note
 
 
 def _forward_email_proposal_text(p: dict) -> str:
     # Grounds the preview in real, freshly-fetched sender/subject/attachment metadata
     # rather than the model's paraphrase — same reasoning as _delete_email_proposal_text.
+    #
+    # Only notable/non-default details get called out: which message in a multi-message
+    # thread, whether there's an attachment. No attachments / single-message thread / no
+    # note are all the common case and stay silent rather than spelling out "none" each time.
     try:
         from core.tools.email.fetch import get_forward_preview
         preview = get_forward_preview(p["thread_id"], gmail_message_id=p.get("gmail_message_id"))
-        count_note = (
-            f" (message {preview['selected_index'] + 1} of {preview['message_count']} "
-            f"in this thread, dated {preview['date']})"
-            if preview["message_count"] > 1 else ""
-        )
-        if preview["attachments"]:
-            att_lines = "\n".join(
-                f"  - {a['filename']} ({a['mime_type']}, {a['size']} bytes)"
-                for a in preview["attachments"]
+        detail_bits = []
+        if preview["message_count"] > 1:
+            detail_bits.append(
+                f"message {preview['selected_index'] + 1} of {preview['message_count']}, "
+                f"dated {preview['date']}"
             )
-            att_block = f"Attachments:\n{att_lines}"
-        else:
-            att_block = "Attachments: none"
-        target = (
-            f"From: {preview['sender_name']} <{preview['sender_email']}>\n"
-            f"Subject: {preview['subject']}{count_note}\n"
-            f"{att_block}"
+        if preview["attachments"]:
+            names = ", ".join(a["filename"] for a in preview["attachments"])
+            plural = "s" if len(preview["attachments"]) > 1 else ""
+            detail_bits.append(f"attachment{plural}: {names}")
+        detail = f" ({'; '.join(detail_bits)})" if detail_bits else ""
+        header = (
+            f"Forwarding \"{preview['subject']}\" from {preview['sender_name']} "
+            f"<{preview['sender_email']}>{detail} to {p.get('to', '')}"
         )
     except Exception as e:
-        target = f"(could not fetch thread details: {e})"
+        header = f"(could not fetch thread details: {e})"
 
-    lines = ["Proposed forward", "", target, "", f"To: {p.get('to', '')}"]
+    lines = [header]
     if p.get("cc"):
         lines.append(f"Cc: {p['cc']}")
     if p.get("bcc"):
         lines.append(f"Bcc: {p['bcc']}")
     if p.get("note"):
         lines += ["", f"Note: {p['note']}"]
-    lines += ["", f"Reason: {p.get('reason', '')}", "", "Reply 'forward it' to forward, or 'cancel' to discard."]
+    elif p.get("reason"):
+        lines += ["", f"({p['reason']})"]
+    lines += ["", "Reply 'forward it' to forward, or 'cancel' to discard."]
     return "\n".join(lines)
 
 
 def _delete_email_proposal_text(p: dict) -> str:
     # Grounds the preview in a real, freshly-fetched sender/subject rather than trusting
-    # only the model's free-text `reason` for what's being deleted.
+    # only the model's free-text `reason` for what's being deleted. Reason stays on its own
+    # line here (unlike send/forward) — there's no body or note to carry the "why" instead.
     try:
         from core.tools.email.fetch import get_thread_summary
         summary = get_thread_summary(p["thread_id"])
-        target = f"From: {summary['sender_name']} <{summary['sender_email']}> — {summary['subject']}"
+        target = f"{summary['sender_name']} <{summary['sender_email']}> — {summary['subject']}"
     except Exception as e:
         target = f"(could not fetch thread details: {e})"
     return (
-        f"Proposed delete (moved to Trash — recoverable for 30 days)\n\n"
-        f"{target}\n\n"
-        f"Reason: {p['reason']}\n\n"
+        f"Deleting: {target} (moved to Trash, recoverable for 30 days)\n\n"
+        f"{p['reason']}\n\n"
         f"Reply 'delete it' to delete, or 'cancel' to discard."
     )
 

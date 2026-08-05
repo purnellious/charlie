@@ -362,9 +362,11 @@ TOOLS = [
             "Propose sending, replying to, replying-all to, or CC/BCC'ing an email. This "
             "NEVER sends immediately — Jonathan is shown the exact resolved recipients, "
             "subject, and body, and it is only sent if he replies with the literal phrase "
-            "'send it' in a separate message. Only call this when Jonathan has explicitly "
-            "asked you to draft or send something — never proactively, and never assume "
-            "success just because you called this tool. Use thread_id (from "
+            "'send it' in a separate message. Don't restate the proposal yourself in text — "
+            "the tool's own confirmation message is the only preview he needs. Only call "
+            "this when Jonathan has explicitly asked you to draft or send something — never "
+            "proactively, and never assume success just because you called this tool. Use "
+            "thread_id (from "
             "search_email/read_email_thread/a digest line) to reply within an existing "
             "conversation, properly threaded in Gmail — omit it to compose a fresh email. "
             "Omit `to` while thread_id is set to reply to the original sender instead of "
@@ -392,9 +394,10 @@ TOOLS = [
         "description": (
             "Propose forwarding a message, including its attachments and original "
             "formatting, to one or more addresses. This NEVER sends immediately — "
-            "Jonathan is shown the sender, subject, message count, and attachment list, "
-            "and it is only forwarded if he replies with the literal phrase 'forward it' "
-            "in a separate message. Only call this when Jonathan has explicitly asked. "
+            "Jonathan is shown a grounded preview and it is only forwarded if he replies "
+            "with the literal phrase 'forward it' in a separate message. Don't restate the "
+            "proposal yourself in text — the tool's own confirmation message is the only "
+            "preview he needs. Only call this when Jonathan has explicitly asked. "
             "Defaults to a thread's most recent message. If the thread has more than one "
             "distinct message (call read_email_thread first to check — its output shows "
             "a 'Gmail Message ID:' line per message) and Jonathan means a specific one "
@@ -419,9 +422,10 @@ TOOLS = [
         "description": (
             "Propose deleting (trashing) an email thread. This NEVER deletes immediately — "
             "Jonathan is shown what's being deleted and it only proceeds if he replies with "
-            "the literal phrase 'delete it' in a separate message. Trashing is reversible for "
-            "30 days (Gmail's own trash retention), never permanent. Only call this when "
-            "Jonathan has explicitly asked."
+            "the literal phrase 'delete it' in a separate message. Don't restate the proposal "
+            "yourself in text — the tool's own confirmation message is the only preview he "
+            "needs. Trashing is reversible for 30 days (Gmail's own trash retention), never "
+            "permanent. Only call this when Jonathan has explicitly asked."
         ),
         "input_schema": {
             "type": "object",
@@ -563,7 +567,11 @@ sending, replying, replying-all, CC/BCC'ing, forwarding, or deleting an email. N
 ever execute immediately — each only fires if Jonathan replies with the exact literal phrase \
 ("send it" / "forward it" / "delete it") in a separate message. Never call these proactively, \
 and never tell Jonathan something was sent, forwarded, or deleted unless he has actually \
-confirmed and you've seen the result — these are proposals, not actions.
+confirmed and you've seen the result — these are proposals, not actions. The tool itself sends \
+Jonathan the only preview he needs (grounded in the real email, not your paraphrase) — do not \
+also describe the proposal yourself in a preceding or following text block; that just makes \
+him read the same thing twice. If something required (like a recipient) is missing, ask for \
+everything you still need in one message rather than one field at a time.
 
 **Capabilities boundary:** You run exclusively on Jonathan's always-on Mac (10.0.0.119). \
 You cannot directly access or execute anything on his main Mac. If Jonathan asks you to do \
