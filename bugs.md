@@ -950,6 +950,7 @@ Every fix was verified against real, live data, not mocks: the exact 4 originall
 **Blocks anything current:** No
 **Rough effort:** Medium
 **Logged:** 2026-08-13
+**Topic ID:** 3399
 
 **Problem:**
 Charlie sometimes asserts email state (e.g. "this was never forwarded", "this thread doesn't exist") based on stale or guessed thread IDs from earlier in a conversation, rather than doing a fresh live lookup. This leads to confident but false answers — in one case claiming an Extra Space email had never been forwarded to finance when it had been on 11 August, only found when a second, broader search was run. The root cause is that email search results aren't persisted, so IDs from earlier calls are held in context and reused without verification, and negative results from insufficiently targeted searches are reported as definitive.
