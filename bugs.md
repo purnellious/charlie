@@ -941,3 +941,23 @@ Every fix was verified against real, live data, not mocks: the exact 4 originall
 `core/tools/grants.py` (`_extract_grants_from_emails`, `poll_gmail_inbox`, `validate_L2`, `validate_L3`, `_html_to_text`, `Opportunity`, `init_db`, `_mark_seen`, new `_today`/`_forced_tool_call`/`_ARTIST_PROFILE`/`_L3_TOOL`), `core/tools/grants_email.py` (email template, category subtitle)
 
 ---
+
+## BUG-036 — Charlie uses guessed/stale thread IDs instead of live lookups when assessing email state
+**Type:** Bug
+**Status:** Open
+**Priority:** Medium
+**Severity:** Medium — leads to confidently wrong answers (e.g. "not forwarded" when it was)
+**Blocks anything current:** No
+**Rough effort:** Medium
+**Logged:** 2026-08-13
+
+**Problem:**
+Charlie sometimes asserts email state (e.g. "this was never forwarded", "this thread doesn't exist") based on stale or guessed thread IDs from earlier in a conversation, rather than doing a fresh live lookup. This leads to confident but false answers — in one case claiming an Extra Space email had never been forwarded to finance when it had been on 11 August, only found when a second, broader search was run. The root cause is that email search results aren't persisted, so IDs from earlier calls are held in context and reused without verification, and negative results from insufficiently targeted searches are reported as definitive.
+
+**What needs fixing:**
+Investigate whether a code-level hook or agent-level guard can be added to force a fresh live search before asserting any email state (e.g. "was this forwarded?", "does this thread exist?", "has this been sent?"). At minimum, Charlie should never report a negative email state result (e.g. "not found", "never forwarded") without having run a sufficiently broad search to back it up — and should say so explicitly if uncertain rather than stating it as fact.
+
+**Touches:**
+TBD
+
+---
