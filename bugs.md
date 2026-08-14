@@ -944,7 +944,7 @@ Every fix was verified against real, live data, not mocks: the exact 4 originall
 
 ## BUG-036 — Charlie uses guessed/stale thread IDs instead of live lookups when assessing email state
 **Type:** Bug
-**Status:** Open
+**Status:** In Progress — fix implemented, not yet closed (see note below)
 **Priority:** Medium
 **Severity:** Medium — leads to confidently wrong answers (e.g. "not forwarded" when it was)
 **Blocks anything current:** No
@@ -958,8 +958,14 @@ Charlie sometimes asserts email state (e.g. "this was never forwarded", "this th
 **What needs fixing:**
 Investigate whether a code-level hook or agent-level guard can be added to force a fresh live search before asserting any email state (e.g. "was this forwarded?", "does this thread exist?", "has this been sent?"). At minimum, Charlie should never report a negative email state result (e.g. "not found", "never forwarded") without having run a sufficiently broad search to back it up — and should say so explicitly if uncertain rather than stating it as fact.
 
+**Fix implemented, 2026-08-14 — deliberately prompt-level, not code-enforced:** investigated a real code-level hook (e.g., forcing a tool call before certain assertions, tracking thread_id freshness) and concluded it's a substantially larger mechanism than this bug warrants — there's no way to structurally block an LLM from writing a sentence, only to make the right behavior more likely. Shipped instead: a new "Email state verification (BUG-036)" rule in `core/agent.py`'s base system prompt requiring a fresh `search_email`/`read_email_thread` call THIS turn before any negative email-state claim, explicitly calling out that a thread_id or result from earlier in the conversation doesn't verify a new claim; a matching nudge attached directly to the actual `tool_result` payload (not just prompt text) when `search_email` returns zero matches or `read_email_thread` can't find a thread, pushing toward broadening the search or admitting uncertainty rather than asserting a negative; and the same guidance added to `search_email`'s tool description. `/code-review` at high effort found no correctness issues (pure string-literal changes) and flagged two judgment calls rather than bugs: the new system-prompt paragraph is base-prompt (not tool-file-scoped) despite CLAUDE.md's "keep the base prompt lean" rule — deliberate, since the failure mode is specifically Charlie asserting a stale claim *without* calling any tool that turn, which a tool-file-only version would never catch; and this remains pure guidance with no hard enforcement, consistent with staying Open rather than Closed.
+
+Live-smoke-tested twice against the real deployed instance (not mocked): (1) a query guaranteed to return zero real results — the tool_result correctly carried the new nudge, and Charlie's response engaged with it directly (reasoned explicitly about whether broadening would help, correctly concluded it wouldn't for an unbroadenable fake domain, rather than skipping straight to a bare "no"); (2) a real Gmail auth failure — Charlie refused to guess and unprompted cited "per BUG-036, I'll tell you plainly when I can't verify," showing the principle generalized beyond the exact scenario it was written for.
+
+**Deliberately left open:** this is a behavioral nudge, not a deterministic fix — it reduces but doesn't eliminate the chance of a confidently-wrong claim under conversational pressure. Per this log's own standard, a scripted smoke test is not the same as Jonathan noticing better behavior (or catching a recurrence) in real day-to-day use.
+
 **Touches:**
-TBD
+`core/agent.py` (system prompt, `search_email` tool description, `search_email`/`read_email_thread` dispatch handlers)
 
 ---
 
