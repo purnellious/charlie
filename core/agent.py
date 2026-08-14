@@ -731,6 +731,30 @@ async def handle_turn(
         if combined_text and not suppress_text:
             await _send_chunks(combined_text, send_fn)
 
+        if tool_blocks and response.stop_reason != "tool_use":
+            # BUG-036: the model was cut off (almost always stop_reason == "max_tokens")
+            # after emitting a tool_use block but before the API could signal it should
+            # actually be run. Persisting that tool_use as-is leaves it with no matching
+            # tool_result forever, and every future turn on this topic starts by resending
+            # that broken pair to the API, which rejects the whole request — permanently,
+            # since load_history() always replays it. Drop the never-dispatched tool_use
+            # block(s) so only the text/thinking content (already sent above) is kept.
+            log.warning(
+                f"Topic {topic_id}: stop_reason={response.stop_reason!r} with a pending "
+                f"tool_use — dropping it undispatched to avoid corrupting history (BUG-036)"
+            )
+            content_to_keep = [b for b in response.content if b.type != "tool_use"]
+            if content_to_keep:
+                messages = messages + [{"role": "assistant", "content": content_to_keep}]
+            if not suppress_text:
+                await _send_chunks(
+                    "(That got cut off before I could actually run the tool call — hit an "
+                    "internal length limit, so nothing was dispatched. Ask me to try again, "
+                    "maybe with a shorter request.)",
+                    send_fn,
+                )
+            break
+
         messages = messages + [{"role": "assistant", "content": response.content}]
 
         if not tool_blocks or response.stop_reason != "tool_use":

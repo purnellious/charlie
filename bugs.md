@@ -962,3 +962,37 @@ Investigate whether a code-level hook or agent-level guard can be added to force
 TBD
 
 ---
+
+## BUG-037 — A response cut off mid-tool-call permanently corrupted a topic's history, and Charlie relayed the raw error verbatim for 15 hours with no recovery path
+**Type:** Bug
+**Status:** Resolved (fix implemented and code-reviewed; not yet live-verified against a real `max_tokens` cutoff on the deployed always-on Mac)
+**Priority:** High
+**Severity:** High — permanently and silently broke an entire Telegram topic; Charlie gave Jonathan zero useful information across four separate check-ins over 15 hours, just the same raw API error each time
+**Blocks anything current:** No
+**Rough effort:** Small (root cause was a ~15-line gap; fix is contained to `handle_turn()`'s loop-exit check)
+**Logged:** 2026-08-14
+**Topic ID:** 3407 (the Morning Briefing v2 planning topic — same one this corrupted)
+
+**Problem:**
+At 20:07:41 on 13 August, Charlie sent a normal-looking message ("Nothing else — we're ready to build...") announcing it was about to kick off the Morning Briefing v2 build via `run_claude_code`. That build never actually started — no second "Claude Code task" log line exists anywhere after it — and every message Jonathan sent into that topic for the next 15 hours (20:26, 20:36, 20:40, and again the next morning at 07:18) got back the identical raw Anthropic API error:
+
+```
+Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'messages.24: `tool_use` ids were found without `tool_result` blocks immediately after: toolu_01G4138wjwnAiBkNYssGREos. ...'}}
+```
+
+**Root cause, confirmed directly against `charlie.db` (not inferred):** message id 2615 in topic 3407 (the "ready to build" message) is stored with two content blocks — a `text` block and a complete, well-formed `tool_use` block calling `run_claude_code` with the full build spec. There is no `tool_result` anywhere after it; the very next stored message is Charlie's own "Something went wrong" error text. `core/agent.py`'s `handle_turn()` loop (pre-fix, around line 734) unconditionally appended the assistant's `response.content` to the in-memory `messages` list, then checked `if not tool_blocks or response.stop_reason != "tool_use": break`. Claude's response that turn hit the 8000-token cap (thinking + text + a long task description) before the API could set `stop_reason` to `"tool_use"` — it came back as `"max_tokens"` instead, even though the `tool_use` block itself had already been fully written. Because `stop_reason != "tool_use"`, the loop broke immediately, **skipping tool execution entirely** — the `run_claude_code` call was never dispatched — while the already-appended assistant message (tool_use included) got returned to `bot.py` and persisted to `charlie.db` as-is. From that point on, `load_history()` replays the same broken pair on every turn, and the Anthropic API correctly, permanently rejects it. No process crash and no watchdog restart occurred anywhere in this window (confirmed via `charlie.log` — heartbeat and email-poll jobs ran on schedule throughout) — this was a pure logic gap, not an infra failure.
+
+This exact failure class (`stop_reason == "max_tokens"` silently producing bad output) was already known and fixed *elsewhere* in this codebase — `core/tools/grants.py`'s `_forced_tool_call()` helper (from BUG-035) explicitly checks for it. The main agent loop in `core/agent.py` never got the same guard.
+
+**Compounding issue, also real:** even once corrupted, Charlie had no way to recognize "this is the same permanent failure as last time" versus a transient one — it just relayed the same raw API error text to Jonathan on each of four separate occasions across 15 hours, with no escalation, no distinct signal that this needed intervention, and no attempt to self-repair.
+
+**Fix implemented (`core/agent.py`, `handle_turn()`):** before appending the assistant message to `messages`, check whether `tool_blocks` is non-empty but `stop_reason != "tool_use"`. If so: drop the never-dispatched `tool_use` block(s) entirely (keeping only the text/thinking content, if any, so nothing incomplete or unpaired ever reaches persisted history), send an explicit message telling Jonathan the tool call was cut off and never ran (rather than staying silent), log a warning tagged BUG-037, and break the loop cleanly. Verified: `python3 -m py_compile core/agent.py` passes.
+
+**Not yet done:** a live end-to-end test that actually reproduces a real `max_tokens`-mid-tool-call cutoff against the deployed instance (hard to force deliberately — this was an organic occurrence, not something with an easy repro trigger). Confidence is high from the direct DB/code evidence above, but per this log's own standard, code-review-clean is not the same as live-verified.
+
+**Touches:**
+`core/agent.py` (`handle_turn()`)
+
+**Repair:** topic 3407's corrupted message (id 2615) and the four resulting "Something went wrong" error messages were repaired directly in `charlie.db` (stripped the orphaned `tool_use` block, removed the stacked error messages) so the topic is usable again — done as a direct data fix, not by running Charlie or re-triggering any build.
+
+---
