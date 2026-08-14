@@ -7,6 +7,7 @@ and tools, streams thinking as | ... | messages, returns updated message history
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +21,39 @@ DEVLOG = CHARLIE_ROOT / "devlog.md"
 CONTEXT_ARCHIVE = CHARLIE_ROOT / "context-archive.md"
 PRINCIPLES = CHARLIE_ROOT / "principles.md"
 MODEL = os.getenv("CHARLIE_MODEL", "claude-sonnet-4-6")
+
+# BUG-036 hard gate — tools handle_turn() is allowed to restrict itself to,
+# forced via tool_choice, when the incoming message looks like an email-state
+# question. See _looks_like_email_state_question() and its call site below.
+_EMAIL_LOOKUP_TOOL_NAMES = {"search_email", "read_email_thread"}
+
+_EMAIL_STATE_STRONG_VERBS = r"(sent|send|forward(ed)?|receiv(e|ed)|repl(y|ied)|deliver(ed)?)"
+# "get"/"got" are too generic to trust alone (e.g. "how did you get that
+# number?") — only counted when paired with an email-ish noun nearby, in the
+# second branch below, never in the broad was/has/had/did/does branch.
+_EMAIL_STATE_WEAK_VERBS = r"(got|get)"
+
+_EMAIL_STATE_QUESTION_PATTERN = re.compile(
+    rf"\b(was|has|had|did|does)\b.{{0,40}}\b{_EMAIL_STATE_STRONG_VERBS}\b"
+    rf"|\b({_EMAIL_STATE_STRONG_VERBS}|{_EMAIL_STATE_WEAK_VERBS})\b.{{0,40}}\b(email|thread|message)\b"
+    r"|\bdoes\b.{0,40}\b(thread|email|message)\b.{0,20}\bexist\b"
+    rf"|\b(never|hasn.?t|wasn.?t|didn.?t)\b.{{0,40}}\b{_EMAIL_STATE_STRONG_VERBS}\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _looks_like_email_state_question(text: str) -> bool:
+    """
+    BUG-036 pre-call gate: heuristic (deliberately not exhaustive) detection
+    of a question about whether an email was sent/forwarded/received/replied
+    to, or whether a thread/message exists — the exact class of claim that
+    must never be answered from a stale thread_id or search result held in
+    earlier conversation history. A false negative just falls back to the
+    existing prompt-level guard (see the system prompt's "Email state
+    verification" section); a false positive costs one extra, harmless
+    lookup call.
+    """
+    return bool(_EMAIL_STATE_QUESTION_PATTERN.search(text))
 MAX_CHUNK = 4000
 
 TOOLS = [
@@ -755,6 +789,11 @@ async def handle_turn(
     # duplicate that message, so stop forwarding text to Telegram from this point on.
     # A system-prompt instruction alone doesn't reliably stop the model from doing this.
     suppress_text = False
+    # BUG-036 hard gate: if this turn's user message looks like an email-state
+    # question, force the FIRST API call of this turn to make a real lookup
+    # before Charlie is allowed to say anything — only for that first call,
+    # not every round of this turn's tool loop.
+    force_email_lookup = _looks_like_email_state_question(user_text)
 
     while True:
         create_kwargs = dict(
@@ -769,6 +808,19 @@ async def handle_turn(
                 "type": "enabled",
                 "budget_tokens": max(1024, thinking_budget),
             }
+
+        if force_email_lookup:
+            # Restrict `tools` to just the two lookup tools rather than
+            # tool_choice={"type": "tool", "name": ...} against the full
+            # list — lets the model pick whichever is actually right (a
+            # fresh search vs re-reading a thread it was just given) without
+            # a hardcoded single choice, while tool_choice="any" guarantees
+            # it can't skip straight to a text answer off stale context.
+            # Compatible with thinking enabled on the plain Claude API
+            # (unlike Amazon Bedrock, which requires thinking disabled here).
+            create_kwargs["tools"] = [t for t in TOOLS if t["name"] in _EMAIL_LOOKUP_TOOL_NAMES]
+            create_kwargs["tool_choice"] = {"type": "any"}
+            force_email_lookup = False
 
         response = await _create_with_retry(client, create_kwargs)
 
