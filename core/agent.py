@@ -282,7 +282,9 @@ TOOLS = [
             "'from:xero.com', 'subject:invoice', 'after:2026/01/01', 'has:attachment', or "
             "combine them ('from:jane subject:contract'). Returns metadata + a short snippet "
             "per match, not full bodies — call read_email_thread on a result's thread_id to "
-            "read the full content."
+            "read the full content. A lack of results does NOT prove something doesn't exist "
+            "— before concluding that, broaden the query (drop date/sender constraints, try "
+            "different keywords or spellings) rather than trusting one narrow search."
         ),
         "input_schema": {
             "type": "object",
@@ -639,6 +641,16 @@ reply deletes the whole batch; calling it once per email only keeps the last one
 You cannot directly access or execute anything on his main Mac. If Jonathan asks you to do \
 something on his main Mac, tell him the exact command to run himself rather than running it \
 and claiming it's done.
+
+**Email state verification (BUG-036):** Never state that an email was never sent, never \
+forwarded, doesn't exist, or wasn't received as settled fact unless you've run a fresh \
+search_email or read_email_thread call THIS turn to back it up — a thread_id or result from \
+earlier in the conversation does not verify a new claim, even about the same thread, since \
+mailbox state can change between turns and an old id may be stale or from the wrong search \
+entirely. If a search might not have been broad enough (a narrow query, a short date range, \
+one sender spelling), broaden it before concluding a negative. If you're still not fully sure \
+after a real, sufficiently broad search, say so plainly ("I couldn't find this, but my search \
+may not have caught everything") rather than stating the negative as fact.
 
 ## Recent changes (devlog)
 
@@ -1112,7 +1124,16 @@ async def handle_turn(
                         max_results=block.input.get("max_results", 10),
                     )
                     if not matches:
-                        result = "No matching emails found."
+                        # BUG-036: a bare "not found" invited stating a negative as
+                        # settled fact off one narrow search — this nudge is attached
+                        # to the actual empty-result tool_result, not just prompt text,
+                        # so it lands right where the failure mode happens.
+                        result = (
+                            "No matching emails found for this exact query. This does NOT "
+                            "confirm the item doesn't exist — before concluding that, try a "
+                            "broader search (drop date/sender constraints, try different "
+                            "keywords) or tell Jonathan you're not certain."
+                        )
                     else:
                         lines = [
                             f"[{m['received_at'][:10]}] From: {m['sender_name']} <{m['sender_email']}> — "
@@ -1137,7 +1158,15 @@ async def handle_turn(
                 try:
                     result = await asyncio.to_thread(get_thread_content, block.input.get("thread_id", ""))
                     if not result:
-                        result = "Thread not found or empty."
+                        # BUG-036: don't let a stale/wrong thread_id read as proof the
+                        # thread itself doesn't exist — push toward a fresh search_email
+                        # instead of asserting a negative off this one lookup.
+                        result = (
+                            "Thread not found or empty for this thread_id. Don't treat this "
+                            "as proof the thread doesn't exist — the id itself may be stale "
+                            "or from an earlier, unrelated search; run a fresh search_email "
+                            "call instead of reusing an id from earlier in this conversation."
+                        )
                     else:
                         has_content = True
                 except Exception as e:
