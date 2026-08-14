@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -26,6 +27,35 @@ MODEL = "claude-haiku-4-5-20251001"  # Haiku is fine for summarisation — save 
 # "unshown" articles before either marks them shown, delivering duplicate news content
 # twice. This lock restores that mutual exclusion explicitly.
 _BRIEFING_LOCK = threading.Lock()
+
+# How long a fetch stays "fresh" for get_fetched_articles() callers to share —
+# see that function's docstring. Morning Briefing v2 (Aug 2026): the weekday
+# briefing and the daily news post fire at the same scheduled instant and both
+# need this same fetch, without either re-fetching or racing the other's mark-
+# shown step.
+#
+# Code review: Monday is NOT at the same instant — scheduler.py deliberately
+# runs Monday's briefing 10 minutes before the news job to dodge the Monday
+# grants pipeline. With a 300s (5 min) window that gap fell outside the
+# freshness cache, so the Monday news job always re-fetched, found everything
+# already marked shown by the earlier briefing run, and posted "No new
+# articles" most Mondays. 900s covers the Monday offset with margin; keep this
+# above whatever offset setup_scheduler ever uses for Monday.
+_SHARED_FETCH_FRESHNESS_SECONDS = 900
+_shared_fetch_cache = {"timestamp": 0.0, "articles_by_topic": None}
+
+# Morning Briefing v2's "News that matters" section: a cheap, keyword-only
+# heuristic (deliberately NOT an API call — this runs over every fetched
+# article, and BUG-019 already established that cost/latency at that volume
+# is worth avoiding) against Jonathan's professional world. Matches are meant
+# to be rare — see relevance_score()'s docstring.
+PROFESSIONAL_PROFILE = {
+    "AI regulation": ["ai act", "ai regulation", "artificial intelligence act", "ai policy", "ai executive order"],
+    "legal/regulatory": ["lawsuit", "legislation", "compliance", "court ruling", "sec charges", "doj", "sec v."],
+    "crypto regulation": ["crypto regulation", "stablecoin", "sec crypto", "monero", "blockchain law", "digital asset act"],
+    "South Africa": ["south africa", "johannesburg", "cape town", "south african rand", "sars "],
+}
+RELEVANCE_THRESHOLD = 0.5
 
 _DEFAULT_SOURCES = [
     ("BBC World",          "http://feeds.bbci.co.uk/news/world/rss.xml",              "World News"),
@@ -205,6 +235,55 @@ def _fetch_all_feeds() -> int:
 # Briefing generation
 # ---------------------------------------------------------------------------
 
+def get_fetched_articles(force_fresh: bool = False) -> dict:
+    """
+    Returns articles_by_topic — fetching + marking shown, or reusing another
+    caller's fetch from within the last 5 minutes. Fetch-then-mark-shown must
+    stay atomic under one lock acquisition (see _BRIEFING_LOCK's docstring for
+    why splitting them let a second caller steal the first caller's freshly
+    fetched articles) — callers must NOT separately call _mark_shown themselves.
+    Must be called off the event loop (asyncio.to_thread/run_in_executor), same
+    as generate_briefing() — this blocks on network I/O and a lock acquisition.
+    """
+    global _shared_fetch_cache
+    with _BRIEFING_LOCK:
+        age = time.time() - _shared_fetch_cache["timestamp"]
+        cached = _shared_fetch_cache["articles_by_topic"]
+        if not force_fresh and cached is not None and age < _SHARED_FETCH_FRESHNESS_SECONDS:
+            return cached
+
+        init_db()
+        _fetch_all_feeds()
+        articles_by_topic = _get_unshown_articles(hours=24)
+        all_ids = [a["id"] for articles in articles_by_topic.values() for a in articles]
+        _mark_shown(all_ids)
+        _shared_fetch_cache = {"timestamp": time.time(), "articles_by_topic": articles_by_topic}
+        return articles_by_topic
+
+
+def relevance_score(article: dict, keywords: dict | None = None) -> tuple[float, str | None]:
+    """
+    Pure keyword heuristic, no API call — see PROFESSIONAL_PROFILE's comment for
+    why. `article` is a plain dict with 'title' and 'summary' (callers holding a
+    sqlite3.Row should pass dict(row)). Returns (score in [0, 1], matched
+    category or None); callers should treat anything below RELEVANCE_THRESHOLD
+    as not worth surfacing — this is meant to flag a rare "because of X, you
+    might want to Y" moment, not a general news filter.
+    """
+    keywords = keywords or PROFESSIONAL_PROFILE
+    text = f"{article.get('title') or ''} {article.get('summary') or ''}".lower()
+
+    best_score, best_category = 0.0, None
+    for category, terms in keywords.items():
+        hits = sum(1 for term in terms if term in text)
+        if hits == 0:
+            continue
+        score = min(1.0, hits / 2)
+        if score > best_score:
+            best_score, best_category = score, category
+    return best_score, best_category
+
+
 def _format_articles_for_prompt(articles_by_topic: dict) -> str:
     lines = []
     for topic, articles in articles_by_topic.items():
@@ -220,56 +299,46 @@ def _format_articles_for_prompt(articles_by_topic: dict) -> str:
 def generate_briefing() -> str:
     """
     Fetch fresh RSS articles and return a formatted news briefing.
-    Called by the get_news_briefing tool handler and the noon scheduler job.
+    Called by the get_news_briefing tool handler and the daily 8am scheduler job.
     Uses Haiku internally for summarisation; returns clean text for Charlie to relay.
+
+    Fetch + mark-shown happens atomically inside get_fetched_articles() (under
+    _BRIEFING_LOCK) — by the time it returns here, a second caller within the
+    freshness window (e.g. the same-instant weekday morning briefing) already
+    sees the same, already-marked result, so no lock is needed around the
+    summarisation step below.
     """
-    # A prior version of this fix moved init_db()/_fetch_all_feeds() outside this lock to
-    # reduce contention (fetching itself doesn't touch the shown/unshown state). That
-    # reintroduced a worse race than the one this lock exists to prevent: with the fetch
-    # unlocked, a second concurrent caller's lock turn could consume the very articles this
-    # call just fetched before this call reaches _get_unshown_articles(), leaving this call
-    # to report "No new articles" even though it's the one that fetched them — a fetch
-    # result silently stolen by another caller, not just delayed. Keeping the whole
-    # fetch-through-mark-shown span under one lock guarantees a caller always reads back
-    # its own fetch atomically, at the cost of a second caller waiting out the fetch too.
-    with _BRIEFING_LOCK:
-        init_db()
-        _fetch_all_feeds()
+    articles_by_topic = get_fetched_articles()
+    if not any(articles_by_topic.values()):
+        return "No new articles since the last briefing."
 
-        articles_by_topic = _get_unshown_articles(hours=24)
-        if not any(articles_by_topic.values()):
-            return "No new articles since the last briefing."
+    articles_context = _format_articles_for_prompt(articles_by_topic)
+    today_str = date.today().strftime("%A, %-d %B %Y")
 
-        articles_context = _format_articles_for_prompt(articles_by_topic)
-        today_str = date.today().strftime("%A, %-d %B %Y")
+    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=1000,
+        system=(
+            f"Today is {today_str}. Generate a concise news briefing from the articles provided. "
+            "For each topic, select the 3–5 most important articles. "
+            "For 'Crypto Regulation' and 'AI Regulation', only include articles specifically about "
+            "regulation, policy, or law — skip general crypto/AI news. "
+            "Format:\n\nTOPIC NAME\n1. Headline — one-line summary (max 20 words)\n2. Headline — summary\n\n"
+            "Rules: omit topics with no relevant articles. Plain text only. No markdown. "
+            "Keep summaries tight and factual. Do not include source names."
+        ),
+        messages=[{"role": "user", "content": f"Articles:\n{articles_context}"}],
+    )
 
-        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=1000,
-            system=(
-                f"Today is {today_str}. Generate a concise news briefing from the articles provided. "
-                "For each topic, select the 3–5 most important articles. "
-                "For 'Crypto Regulation' and 'AI Regulation', only include articles specifically about "
-                "regulation, policy, or law — skip general crypto/AI news. "
-                "Format:\n\nTOPIC NAME\n1. Headline — one-line summary (max 20 words)\n2. Headline — summary\n\n"
-                "Rules: omit topics with no relevant articles. Plain text only. No markdown. "
-                "Keep summaries tight and factual. Do not include source names."
-            ),
-            messages=[{"role": "user", "content": f"Articles:\n{articles_context}"}],
-        )
+    briefing_text = next(
+        (block.text.strip() for block in response.content if hasattr(block, "text")),
+        ""
+    )
+    if not briefing_text:
+        return "Could not generate news briefing."
 
-        briefing_text = next(
-            (block.text.strip() for block in response.content if hasattr(block, "text")),
-            ""
-        )
-        if not briefing_text:
-            return "Could not generate news briefing."
-
-        all_ids = [a["id"] for articles in articles_by_topic.values() for a in articles]
-        _mark_shown(all_ids)
-
-        return f"News Briefing — {today_str}\n\n{briefing_text}"
+    return f"News Briefing — {today_str}\n\n{briefing_text}"
 
 
 # ---------------------------------------------------------------------------

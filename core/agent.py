@@ -198,6 +198,53 @@ TOOLS = [
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
+        "name": "add_reminder",
+        "description": (
+            "Add a reminder that surfaces in the morning briefing when due. Use when "
+            "Jonathan asks to be reminded of something, especially a recurring check-in "
+            "('remind me to check in with Erika every Monday'). Writes immediately and "
+            "confirm in one line — no approval needed first, this is a low-stakes, fully "
+            "reversible write (Jonathan's explicit sign-off, 13 Aug 2026)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": "What to remind Jonathan of, e.g. 'Check in with Erika about 250 Maloney'",
+                },
+                "recurrence": {
+                    "type": "string",
+                    "description": "'once', 'daily', 'weekly:<weekday>' (e.g. 'weekly:monday'), or 'monthly:<1-31>' (e.g. 'monthly:15')",
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Optional extra context to show alongside the reminder",
+                },
+            },
+            "required": ["description", "recurrence"],
+        },
+    },
+    {
+        "name": "dismiss_reminder",
+        "description": (
+            "Remove a reminder Jonathan no longer wants — use when he says something like "
+            "'drop that reminder' or 'stop reminding me about X'. Identify it by matching "
+            "words from its description; if more than one plausibly matches, ask which one "
+            "before calling this."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "description_match": {
+                    "type": "string",
+                    "description": "Words from the reminder's description to match against, e.g. 'Erika'",
+                },
+            },
+            "required": ["description_match"],
+        },
+    },
+    {
         "name": "restart_charlie",
         "description": (
             "Restart the Charlie service to load a build that touched code (see the "
@@ -553,6 +600,9 @@ when you learn something important about Jonathan. He will review before it's sa
 - **resolve_bug** — mark a bug as resolved after confirming a complete fix exists
 - **get_news_briefing** — fetch and summarise today's news, grouped by topic
 - **news_add_source** / **news_remove_source** / **news_list_sources** — manage RSS feeds
+- **add_reminder** / **dismiss_reminder** — recurring or one-off reminders that surface in the \
+morning briefing when due; add_reminder writes immediately (no approval needed), dismiss_reminder \
+removes one Jonathan no longer wants
 - **convene_council** — run a structured multi-voice brainstorm; have a composition discussion first \
 to determine which members are relevant, confirm with Jonathan, then call this tool
 - **search_email** — live search of Jonathan's whole mailbox using Gmail query syntax; use \
@@ -996,6 +1046,56 @@ async def handle_turn(
             elif block.name == "news_list_sources":
                 from core.tools.news import tool_list_sources
                 result = tool_list_sources()
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+
+            elif block.name == "add_reminder":
+                from core.tools.reminders import add_reminder
+                try:
+                    reminder = await asyncio.to_thread(
+                        add_reminder,
+                        block.input.get("description", ""),
+                        block.input.get("recurrence", ""),
+                        block.input.get("context"),
+                    )
+                    result = f"Added — next due {reminder['next_due']}."
+                except Exception as e:
+                    # Broad, not just ValueError (code review) — matches every
+                    # other tool handler in this loop (log_bug, resolve_bug,
+                    # search_email, ...): an unexpected error here (e.g. an
+                    # OSError writing reminders.json) should become a clean
+                    # tool_result, not an uncaught exception that aborts the
+                    # rest of this turn's tool calls via bot.py's outer catch.
+                    result = f"Could not add reminder: {e}"
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+
+            elif block.name == "dismiss_reminder":
+                from core.tools.reminders import find_reminders_by_description, dismiss_reminder
+                try:
+                    matches = await asyncio.to_thread(
+                        find_reminders_by_description, block.input.get("description_match", "")
+                    )
+                    if not matches:
+                        result = "Couldn't find a matching reminder."
+                    elif len(matches) > 1:
+                        # Tool description says to ask before dismissing when more
+                        # than one plausibly matches — enforce that here rather than
+                        # relying solely on the model noticing (code review): silently
+                        # taking the first match could dismiss the wrong reminder.
+                        options = "; ".join(f"'{m['description']}'" for m in matches)
+                        result = f"More than one reminder matches — ask which one: {options}"
+                    else:
+                        await asyncio.to_thread(dismiss_reminder, matches[0]["id"])
+                        result = f"Removed: {matches[0]['description']}"
+                except Exception as e:
+                    result = f"Could not dismiss reminder: {e}"
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,

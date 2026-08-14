@@ -21,6 +21,7 @@ The following are the only sanctioned persistent stores. Nothing new is added wi
 | `bugs.md` | Bug and debt tracker | Indefinite |
 | `devlog.md` | Change log | Indefinite |
 | `followups.md` | Open chase items | Indefinite |
+| `data/reminders.json` | Recurring/one-off reminders surfaced by the morning briefing when due (Morning Briefing v2, Aug 2026) — `{id, description, recurrence, context, next_due, fired, created_at}` per reminder, added conversationally via `add_reminder` (no approval gate — Jonathan's explicit sign-off) | Indefinite. One-off reminders are marked `fired` after appearing, not deleted (Jonathan's explicit call — silent deletion isn't acceptable, only an explicit `dismiss_reminder` removes a row). Recurring reminders' `next_due` advances after each appearance. |
 | `data/heartbeat.txt` | A single timestamp, written every 3 minutes only after a genuinely successful Telegram API call (`app.bot.get_me()`) — read by the independent `watchdog.py` process as a functional health signal | Overwritten every write; no history kept |
 | `data/watchdog_state.json` | Small local state for `watchdog.py` (`unhealthy_since`, `already_restarted`, `alert_count`) so repeated unhealthy checks don't re-alert or re-restart indefinitely | Overwritten on every check; reset on recovery |
 

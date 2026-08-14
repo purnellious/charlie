@@ -62,7 +62,9 @@ Missing context files fail silently — load proceeds without them.
 **`core/history.py`** — SQLite-backed conversation history, keyed by topic_id.
 Thinking blocks are stripped before storage (they don't persist across sessions).
 
-**`core/scheduler.py`** — APScheduler. Jobs: morning briefing topic, daily check-in topic, noon news briefing topic, 3am bug topic reconciliation.
+**`core/scheduler.py`** — APScheduler. Jobs: weekday morning briefing topic (dynamic
+planner — `core/tools/briefing.py`), daily news briefing topic, 3am bug topic
+reconciliation.
 
 ## Bug management
 
@@ -140,8 +142,10 @@ This keeps both Claude Code sessions and Charlie in sync on the current state of
 - `TELEGRAM_GROUP_ID` — forum group chat ID (negative number)
 - `ANTHROPIC_API_KEY`
 - `GROQ_API_KEY` — for Whisper transcription
-- `MORNING_BRIEFING_TIME` — e.g. "07:30"
-- `NEWS_BRIEFING_TIME` — e.g. "12:00" (noon news briefing topic)
+- `MORNING_BRIEFING_TIME` — e.g. "08:00" (Tue-Fri morning briefing and the daily news
+  topic both fire here, sharing one RSS fetch; Monday's briefing runs 10 minutes earlier
+  automatically — see `core/scheduler.py`'s `setup_scheduler`). `NEWS_BRIEFING_TIME` was
+  retired in Morning Briefing v2 (Aug 2026) — the news job no longer reads it.
 - `TIMEZONE` — IANA string, e.g. "Europe/London"
 - `THINKING_ENABLED` — "true" / "false"
 - `THINKING_BUDGET` — token budget for thinking (default 2000, min 1024)

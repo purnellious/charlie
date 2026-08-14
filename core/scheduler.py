@@ -3,11 +3,14 @@ Scheduler — manages timed jobs.
 v1: morning briefing only (creates a new Telegram topic each day).
 v2: added daily check-in reminder at configurable time (default 08:00).
 v3: morning briefing includes open follow-up items from followups.md.
+v4 (Morning Briefing v2, Aug 2026): replaced the thin v3 briefing and the
+separate daily check-in with one dynamic planner (core/tools/briefing.py) —
+weekdays only, sharing its RSS fetch with the news job. See devlog.md.
 """
 
 import logging
 import os
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram.ext import Application
@@ -30,86 +33,73 @@ async def proactive_send(app: Application, group_id: str, thread_id: int, text: 
     )
     save_message(thread_id, "assistant", text)
 
-FOLLOWUPS_PATH = os.path.join(os.path.dirname(__file__), "..", "followups.md")
+CHARLIE_DOC_PATH = os.path.join(os.path.dirname(__file__), "..", "charlie.md")
+CONTEXT_ARCHIVE_PATH = os.path.join(os.path.dirname(__file__), "..", "context-archive.md")
 
 
-def _load_due_followups() -> list[str]:
-    """Return descriptions of open follow-ups whose chase-from date is today or earlier."""
-    today = date.today()
-    due = []
+def _load_charlie_context() -> str:
     try:
-        with open(FOLLOWUPS_PATH, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line.startswith("- [ ]"):
-                    continue
-                if "chase from:" not in line:
-                    continue
-                # Extract chase-from date
-                after_chase = line.split("chase from:")[1]
-                chase_str = after_chase.split("|")[0].strip()
-                try:
-                    chase_date = date.fromisoformat(chase_str)
-                except ValueError:
-                    continue
-                if chase_date <= today:
-                    # Extract description (between "- [ ] " and first "|")
-                    desc = line[len("- [ ] "):].split("|")[0].strip()
-                    due.append(desc)
+        with open(CHARLIE_DOC_PATH, "r") as f:
+            return f.read().strip()
     except FileNotFoundError:
-        pass
-    return due
+        return ""
 
 
-async def _create_morning_briefing(app: Application):
+def _load_context_archive_excerpt(max_entries: int = 5) -> str:
+    """Last `max_entries` distilled entries from context-archive.md, passed as a
+    plain string — core/tools/briefing.py deliberately does no file I/O of its
+    own for this (build review, round 3), so the read and the bounding both
+    happen here. Entries are separated by a bare '---' line, matching /distil's
+    existing append format (see core/bot.py's _append_to_context_archive)."""
+    try:
+        with open(CONTEXT_ARCHIVE_PATH, "r") as f:
+            content = f.read()
+    except FileNotFoundError:
+        return ""
+    entries = [e.strip() for e in content.split("\n---\n") if e.strip()]
+    return "\n\n---\n\n".join(entries[-max_entries:])
+
+
+async def _send_morning_briefing(app: Application, dry_run: bool = False):
+    """Morning Briefing v2 — replaces both the old thin _create_morning_briefing
+    and the separate daily _create_checkin (Jonathan's explicit call, 13 Aug
+    2026 design: one message, not two). Runs weekdays only; see setup_scheduler
+    for the Monday-vs-Tue-Fri timing split."""
     group_id = os.getenv("TELEGRAM_GROUP_ID", "").strip()
     if not group_id:
         return
 
-    today = datetime.now().strftime("%A, %d %B %Y")
-    topic_name = f"Morning — {datetime.now().strftime('%d %b')}"
-
     try:
-        forum_topic = await app.bot.create_forum_topic(
-            chat_id=group_id,
-            name=topic_name,
+        import asyncio
+        from core.tools.briefing import build_briefing_text
+
+        charlie_context = _load_charlie_context()
+        archive_excerpt = _load_context_archive_excerpt()
+        message_text, fired_reminder_ids, today = await asyncio.to_thread(
+            build_briefing_text, charlie_context, archive_excerpt, dry_run
         )
+
+        if dry_run:
+            log.info(f"Morning briefing (dry run):\n{message_text}")
+            return
+
+        topic_name = f"Morning — {datetime.now().strftime('%d %b')}"
+        forum_topic = await app.bot.create_forum_topic(chat_id=group_id, name=topic_name)
         thread_id = forum_topic.message_thread_id
-
-        due_followups = _load_due_followups()
-        followup_section = ""
-        if due_followups:
-            items = "\n".join(f"• {d}" for d in due_followups)
-            followup_section = f"\n\n**Follow-ups**\n{items}"
-
-        message_text = f"Good morning. It's {today}.{followup_section}\n\nWhat does today look like for you?"
         await proactive_send(app, group_id, thread_id, message_text)
         log.info(f"Morning briefing topic created: '{topic_name}' (thread_id={thread_id})")
 
+        # Only mark reminders as shown once they've actually reached Jonathan
+        # (code review: advancing this inside build_briefing_text, before the
+        # topic/send above, meant a Telegram failure here still silently
+        # consumed a one-off or pushed a recurring reminder a full cycle
+        # forward with no retry, unlike _send_news_briefing).
+        if fired_reminder_ids:
+            from core.tools.reminders import advance_after_briefing
+            await asyncio.to_thread(advance_after_briefing, fired_reminder_ids, today)
+
     except Exception as e:
         log.error(f"Morning briefing failed: {e}")
-
-
-async def _create_checkin(app: Application):
-    group_id = os.getenv("TELEGRAM_GROUP_ID", "").strip()
-    if not group_id:
-        return
-
-    topic_name = f"Check-in — {datetime.now().strftime('%d %b %Y')}"
-
-    try:
-        forum_topic = await app.bot.create_forum_topic(
-            chat_id=group_id,
-            name=topic_name,
-        )
-        thread_id = forum_topic.message_thread_id
-
-        message_text = "Good morning Jonathan — daily context check-in. I have 5 questions for you today. Ready when you are."
-        await proactive_send(app, group_id, thread_id, message_text)
-        log.info(f"Check-in topic created: '{topic_name}' (thread_id={thread_id})")
-
-    except Exception as e:
-        log.error(f"Check-in creation failed: {e}")
 
 
 async def _send_news_briefing(app: Application, is_retry: bool = False):
@@ -344,37 +334,46 @@ async def setup_scheduler(app: Application):
         log.warning("TELEGRAM_GROUP_ID not set — scheduler not started.")
         return
 
-    briefing_time = os.getenv("MORNING_BRIEFING_TIME", "07:30")
+    # Shared daily slot: the news job runs here every day, and the weekday
+    # morning briefing (Tue-Fri) shares it — both fire at the same instant so
+    # they share one RSS fetch (see news.get_fetched_articles). Monday's
+    # briefing runs 10 minutes earlier to avoid colliding with the Monday
+    # 08:00 grants pipeline (Jonathan's explicit call, 13 Aug 2026 design) —
+    # derived as an offset, not a separate env var, so it can't drift out of
+    # sync with the base time if that's ever reconfigured.
+    briefing_time = os.getenv("MORNING_BRIEFING_TIME", "08:00")
     briefing_hour, briefing_minute = map(int, briefing_time.split(":"))
-
-    checkin_time = os.getenv("CHECKIN_TIME", "08:00")
-    checkin_hour, checkin_minute = map(int, checkin_time.split(":"))
-
-    news_time = os.getenv("NEWS_BRIEFING_TIME", "12:00")
-    news_hour, news_minute = map(int, news_time.split(":"))
+    _monday_dt = datetime(2000, 1, 1, briefing_hour, briefing_minute) - timedelta(minutes=10)
+    monday_hour, monday_minute = _monday_dt.hour, _monday_dt.minute
 
     timezone = os.getenv("TIMEZONE", "UTC")
 
     scheduler = AsyncIOScheduler(timezone=timezone)
     scheduler.add_job(
-        _create_morning_briefing,
+        _send_morning_briefing,
         trigger="cron",
-        hour=briefing_hour,
-        minute=briefing_minute,
+        day_of_week="mon",
+        hour=monday_hour,
+        minute=monday_minute,
+        id="morning_briefing_monday",
+        replace_existing=True,
         args=[app],
     )
     scheduler.add_job(
-        _create_checkin,
+        _send_morning_briefing,
         trigger="cron",
-        hour=checkin_hour,
-        minute=checkin_minute,
+        day_of_week="tue-fri",
+        hour=briefing_hour,
+        minute=briefing_minute,
+        id="morning_briefing_tuefri",
+        replace_existing=True,
         args=[app],
     )
     scheduler.add_job(
         _send_news_briefing,
         trigger="cron",
-        hour=news_hour,
-        minute=news_minute,
+        hour=briefing_hour,
+        minute=briefing_minute,
         args=[app],
     )
     scheduler.add_job(
@@ -423,9 +422,9 @@ async def setup_scheduler(app: Application):
     )
     scheduler.start()
 
-    log.info(f"Morning briefing scheduled for {briefing_time} ({timezone}) daily.")
-    log.info(f"Check-in scheduled for {checkin_time} ({timezone}) daily.")
-    log.info(f"News briefing scheduled for {news_time} ({timezone}) daily.")
+    log.info(f"Morning briefing scheduled for {monday_hour:02d}:{monday_minute:02d} Monday, "
+             f"{briefing_time} Tue-Fri ({timezone}).")
+    log.info(f"News briefing scheduled for {briefing_time} ({timezone}) daily.")
     log.info(f"Bug topic reconciliation scheduled for 03:00 ({timezone}) daily.")
     log.info(f"Grant finder pipeline scheduled for Monday 08:00 ({timezone}) weekly.")
     log.info(f"Retention sweep scheduled for 04:00 ({timezone}) daily.")
