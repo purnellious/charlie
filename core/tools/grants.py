@@ -6,8 +6,10 @@ Caller passes final opportunities to grants_email.py for formatting and sending.
 Sources: CaFÉ/callforentry.org, NJ State Council on the Arts,
          Jersey City Arts Council, Gmail inbox (newsletters).
 """
+import csv
 import imaplib
 import email as email_lib
+import io
 import json
 import logging
 import os
@@ -59,7 +61,8 @@ class Opportunity:
     category: Optional[str] = None
     flagged: bool = False
     # Populated by validate_L3 from the live source page — empty until then.
-    eligibility_notes: str = ""  # a restriction/priority worth surfacing upfront (may be empty)
+    eligibility_notes: str = ""  # a preference/priority worth surfacing (never disqualifying)
+    hard_exclusions: str = ""    # a categorical restriction (e.g. region/role) — may disqualify
     mediums: str = ""            # e.g. "painting, sculpture" or "All media"
     theme_summary: str = ""      # one-line theme/purpose of the call
     flag_reason: str = ""
@@ -91,15 +94,16 @@ def init_db():
                 description       TEXT,
                 apply_link        TEXT,
                 eligibility_notes TEXT,
+                hard_exclusions   TEXT,
                 mediums           TEXT,
                 theme_summary     TEXT,
                 first_seen        TEXT    NOT NULL DEFAULT (date('now')),
                 last_seen         TEXT    NOT NULL DEFAULT (date('now'))
             )
         """)
-        # Migrate DBs created before eligibility_notes/mediums/theme_summary existed.
+        # Migrate DBs created before eligibility_notes/hard_exclusions/mediums/theme_summary existed.
         existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(opportunities)")}
-        for col in ("eligibility_notes", "mediums", "theme_summary"):
+        for col in ("eligibility_notes", "hard_exclusions", "mediums", "theme_summary"):
             if col not in existing_cols:
                 conn.execute(f"ALTER TABLE opportunities ADD COLUMN {col} TEXT")
         conn.execute("""
@@ -109,6 +113,49 @@ def init_db():
                 title      TEXT,
                 reason     TEXT,
                 flagged_at TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        # Multi-artist matching (Art Grant Finder V2). Field set matches the real
+        # onboarding form (not an earlier, smaller draft) — includes several sensitive
+        # demographic categories (racial_ethnic_background, sexual_orientation,
+        # disability, nationality) that Jonathan explicitly asked to send through for
+        # matching accuracy, with the tradeoff of sending them to Anthropic weekly
+        # discussed and accepted (see data-architecture.md).
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS artist_profiles (
+                id                           INTEGER PRIMARY KEY AUTOINCREMENT,
+                email                        TEXT    NOT NULL UNIQUE,
+                name                         TEXT    NOT NULL,
+                nationality                  TEXT,
+                gender_identity              TEXT,
+                sexual_orientation           TEXT,
+                racial_ethnic_background     TEXT,
+                disability                   TEXT,
+                age                          TEXT,
+                location                     TEXT,
+                artistic_discipline          TEXT,
+                geographic_area_of_interest  TEXT,
+                opportunities_of_interest    TEXT,
+                bio                          TEXT,
+                statement                    TEXT,
+                active                       INTEGER NOT NULL DEFAULT 1,
+                first_synced_run             TEXT,
+                created_at                   TEXT    NOT NULL DEFAULT (date('now')),
+                updated_at                   TEXT    NOT NULL DEFAULT (date('now'))
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS matches (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                artist_id       INTEGER NOT NULL REFERENCES artist_profiles(id),
+                opportunity_url TEXT    NOT NULL,
+                eligible        INTEGER NOT NULL,
+                score           INTEGER,
+                rationale       TEXT,
+                status          TEXT    NOT NULL,
+                evaluated_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+                sent_at         TEXT,
+                UNIQUE(artist_id, opportunity_url)
             )
         """)
     log.info("grants.db initialised")
@@ -124,8 +171,8 @@ def _mark_seen(opp: "Opportunity"):
     with _conn() as conn:
         conn.execute("""
             INSERT INTO opportunities (url, title, deadline, source, category, description, apply_link,
-                                        eligibility_notes, mediums, theme_summary)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        eligibility_notes, hard_exclusions, mediums, theme_summary)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(url) DO UPDATE SET
                 last_seen         = date('now'),
                 title             = excluded.title,
@@ -133,11 +180,12 @@ def _mark_seen(opp: "Opportunity"):
                 category          = excluded.category,
                 description       = excluded.description,
                 eligibility_notes = excluded.eligibility_notes,
+                hard_exclusions   = excluded.hard_exclusions,
                 mediums           = excluded.mediums,
                 theme_summary     = excluded.theme_summary
         """, (opp.url, opp.title, opp.deadline, opp.source, opp.category,
               _smart_truncate(opp.description) if opp.description else None,
-              opp.apply_url, opp.eligibility_notes, opp.mediums, opp.theme_summary))
+              opp.apply_url, opp.eligibility_notes, opp.hard_exclusions, opp.mediums, opp.theme_summary))
 
 
 def _save_flagged(opp: "Opportunity"):
@@ -146,6 +194,186 @@ def _save_flagged(opp: "Opportunity"):
             "INSERT INTO flagged (url, title, reason) VALUES (?, ?, ?)",
             (opp.url, opp.title, opp.flag_reason),
         )
+
+
+# ---------------------------------------------------------------------------
+# Artist profiles — Google Form/Sheet intake (Art Grant Finder V2)
+# ---------------------------------------------------------------------------
+
+# Maps the real onboarding form's question titles (lowercased, exactly as Google Forms
+# writes them as CSV column headers once linked to a Sheet) to internal artist_profiles
+# column names. Google Forms auto-adds a "Timestamp" column when linked — deliberately
+# not in this map since it's neither needed nor validated against.
+_ARTIST_FIELD_MAP = {
+    "name": "name",
+    "email": "email",
+    "nationality": "nationality",
+    "gender identity": "gender_identity",
+    "sexual orientation": "sexual_orientation",
+    "racial/ethnic background": "racial_ethnic_background",
+    "disability": "disability",
+    "age": "age",
+    "location (city, state)": "location",
+    "artistic discipline": "artistic_discipline",
+    "geographic area of interest": "geographic_area_of_interest",
+    "opportunities of interest": "opportunities_of_interest",
+    "artist bio": "bio",
+    "artist statement": "statement",
+}
+
+
+def sync_artist_profiles(sheet_csv_url: str, run_today: date) -> int:
+    """
+    Sync artist_profiles from a Google Sheet's public CSV export URL.
+
+    Fails closed: anything that suggests the fetch/parse can't be trusted — an HTML
+    sign-in page served instead of CSV (Google does this silently if the Sheet's sharing
+    ever reverts to private, rather than returning an HTTP error), or a header row
+    missing expected columns (Jonathan renaming a Form question later is a real, and
+    otherwise silent, failure mode) — aborts the whole sync and keeps the existing
+    profiles untouched, rather than upserting garbage or wiping good data on a transient
+    failure. Returns the number of profiles upserted (0 on abort, which is
+    indistinguishable from "the Sheet was genuinely empty" in the return value alone —
+    the log line is what distinguishes them).
+    """
+    try:
+        resp = requests.get(sheet_csv_url, timeout=_REQUEST_TIMEOUT, headers={"User-Agent": _USER_AGENT})
+    except Exception as e:
+        log.error(f"Artist profile sync: could not fetch Sheet CSV: {e}")
+        return 0
+
+    content_type = resp.headers.get("Content-Type", "").lower()
+    body_start = resp.text.lstrip()[:200].lower()
+    if "csv" not in content_type and "text/plain" not in content_type and body_start.startswith("<"):
+        log.error(
+            f"Artist profile sync: response doesn't look like CSV (content-type={content_type!r}, "
+            f"body starts with {body_start[:50]!r}) — sharing may have reverted to private. "
+            f"Aborting, keeping existing profiles."
+        )
+        return 0
+
+    reader = csv.DictReader(io.StringIO(resp.text))
+    header_cols = {c.strip().lower() for c in (reader.fieldnames or [])}
+    expected_titles = set(_ARTIST_FIELD_MAP.keys())
+    if not expected_titles.issubset(header_cols):
+        missing = sorted(expected_titles - header_cols)
+        log.error(
+            f"Artist profile sync: CSV header missing expected question(s) {missing} "
+            f"(got {reader.fieldnames}) — a Form question may have been reworded. "
+            f"Aborting, keeping existing profiles."
+        )
+        return 0
+
+    with _conn() as conn:
+        is_bootstrap = conn.execute("SELECT COUNT(*) FROM artist_profiles").fetchone()[0] == 0
+        # Backdated so `first_synced_run < run_today` is already true for the founding
+        # batch — Jonathan curated it directly, unlike a later organic signup arriving
+        # without his real-time oversight, which is the actual risk the delay covers.
+        bootstrap_synced_run = (run_today - timedelta(days=1)).isoformat()
+
+        seen_emails = set()
+        upserted = 0
+        for row in reader:
+            try:
+                # k can be None when a row has more fields than the header (Google
+                # Forms can produce this for a stray/malformed submission) — skip those
+                # rather than crash the whole sync on .strip()-ing a None.
+                by_title = {
+                    k.strip().lower(): (v or "").strip()
+                    for k, v in row.items() if k is not None
+                }
+                fields = {col: by_title.get(title, "") for title, col in _ARTIST_FIELD_MAP.items()}
+
+                # Lowercased for identity purposes — without this, a re-submission with
+                # different casing (e.g. Name@x.com vs name@x.com) creates a duplicate
+                # profile, orphans the original's match history, and wrongly deactivates it.
+                email_addr = fields["email"].strip().lower()
+                if not email_addr or "@" not in email_addr:
+                    # Log only what's needed to locate the row, never the full row — it
+                    # contains sensitive demographic fields (sexual orientation, race,
+                    # disability, etc.) that must not end up in a plaintext log file just
+                    # because the email field happened to be blank or mistyped.
+                    log.warning(
+                        f"Artist profile sync: skipping row with invalid email "
+                        f"(name={fields.get('name', '')!r})"
+                    )
+                    continue
+                seen_emails.add(email_addr)
+
+                existing = conn.execute(
+                    "SELECT first_synced_run FROM artist_profiles WHERE email=?", (email_addr,)
+                ).fetchone()
+                if existing is not None:
+                    first_synced_run = existing["first_synced_run"]  # preserve — never reset on update
+                else:
+                    first_synced_run = bootstrap_synced_run if is_bootstrap else run_today.isoformat()
+            except Exception as e:
+                # One malformed row must never abort the whole sync (and, transitively,
+                # the whole weekly pipeline — sync runs before scrape/match/deliver).
+                log.error(f"Artist profile sync: skipping malformed row due to error: {e}")
+                continue
+
+            conn.execute("""
+                INSERT INTO artist_profiles
+                    (email, name, nationality, gender_identity, sexual_orientation,
+                     racial_ethnic_background, disability, age, location, artistic_discipline,
+                     geographic_area_of_interest, opportunities_of_interest, bio, statement,
+                     active, first_synced_run)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                ON CONFLICT(email) DO UPDATE SET
+                    name                         = excluded.name,
+                    nationality                  = excluded.nationality,
+                    gender_identity              = excluded.gender_identity,
+                    sexual_orientation           = excluded.sexual_orientation,
+                    racial_ethnic_background     = excluded.racial_ethnic_background,
+                    disability                   = excluded.disability,
+                    age                          = excluded.age,
+                    location                     = excluded.location,
+                    artistic_discipline          = excluded.artistic_discipline,
+                    geographic_area_of_interest  = excluded.geographic_area_of_interest,
+                    opportunities_of_interest    = excluded.opportunities_of_interest,
+                    bio                          = excluded.bio,
+                    statement                    = excluded.statement,
+                    active                       = 1,
+                    updated_at                   = date('now')
+            """, (
+                email_addr, fields["name"], fields["nationality"], fields["gender_identity"],
+                fields["sexual_orientation"], fields["racial_ethnic_background"], fields["disability"],
+                fields["age"], fields["location"], fields["artistic_discipline"],
+                fields["geographic_area_of_interest"], fields["opportunities_of_interest"],
+                fields["bio"], fields["statement"], first_synced_run,
+            ))
+            upserted += 1
+
+        # Deactivation (opt-out path) — anyone previously active but absent from this
+        # pull. Guarded on seen_emails being non-empty: an entirely-empty valid parse
+        # (e.g. a brand-new Form with zero responses yet) must never deactivate everyone.
+        if seen_emails:
+            placeholders = ",".join("?" * len(seen_emails))
+            conn.execute(
+                f"UPDATE artist_profiles SET active=0, updated_at=date('now') "
+                f"WHERE active=1 AND email NOT IN ({placeholders})",
+                tuple(seen_emails),
+            )
+        else:
+            log.warning("Artist profile sync: no valid rows in this pull — not deactivating anyone")
+
+    log.info(f"Artist profile sync: upserted {upserted} profile(s)" + (" [bootstrap]" if is_bootstrap else ""))
+    return upserted
+
+
+def get_new_signups(run_today: date) -> list:
+    """
+    Artists whose first_synced_run is exactly run_today — i.e. genuinely new this run,
+    currently delayed from matching until next run. For the admin summary's "new
+    signups" line.
+    """
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT email, name FROM artist_profiles WHERE first_synced_run = ?",
+            (run_today.isoformat(),),
+        ).fetchall()
+    return [{"email": r["email"], "name": r["name"]} for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -996,6 +1224,18 @@ def validate_L1(opportunities: list) -> tuple:
 # Validation — L2: Deadline sanity
 # ---------------------------------------------------------------------------
 
+def _parse_flexible_date(deadline_str: Optional[str]) -> Optional[date]:
+    """Try each format scrapers/extraction have produced historically. None if unparseable."""
+    if not deadline_str:
+        return None
+    for fmt in ["%Y-%m-%d", "%B %d %Y", "%b %d %Y", "%m/%d/%Y"]:
+        try:
+            return datetime.strptime(deadline_str, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def validate_L2(opportunities: list) -> tuple:
     """
     Flag entries whose deadline is in the past or more than 2 years in the future.
@@ -1007,17 +1247,7 @@ def validate_L2(opportunities: list) -> tuple:
     valid, flagged = [], []
 
     for opp in opportunities:
-        if not opp.deadline:
-            valid.append(opp)
-            continue
-
-        parsed = None
-        for fmt in ["%Y-%m-%d", "%B %d %Y", "%b %d %Y", "%m/%d/%Y"]:
-            try:
-                parsed = datetime.strptime(opp.deadline, fmt).date()
-                break
-            except ValueError:
-                continue
+        parsed = _parse_flexible_date(opp.deadline)
 
         if parsed is None:
             valid.append(opp)
@@ -1044,35 +1274,36 @@ def validate_L2(opportunities: list) -> tuple:
 # Validation — L3: AI cross-check
 # ---------------------------------------------------------------------------
 
-# Larica's actual eligibility profile — used by validate_L3 to reject opportunities she
-# genuinely can't apply to (a different region's residents-only call, an educator-only
-# award) while keeping ones that merely mention a preference/priority for another group
-# without disqualifying her. Not a medium restriction — she isn't limited to one medium,
-# so medium is only ever extracted for display, never used to reject.
-_ARTIST_PROFILE = (
-    "A visual artist (not an art educator, curator, or student) based in Jersey City, NJ. "
-    "Not restricted to one medium — medium-specific opportunities (e.g. sculpture-only "
-    "grants) are fine to include; medium is informational only and must never be used as "
-    "a reason to reject an opportunity."
-)
-
+# Profile-independent (Art Grant Finder V2) — this tool serves many artists with
+# different profiles, so it only records this opportunity's own objective
+# characteristics (is it live, who's excluded, what's the real deadline, what's it
+# actually about) — never a judgment for any specific applicant. That judgment belongs
+# to the per-artist matching stage.
 _L3_TOOL = {
     "name": "review_opportunity",
     "description": "Record the review verdict for a scraped grant/open-call opportunity.",
     "input_schema": {
         "type": "object",
         "properties": {
-            "match": {
+            "is_live": {
                 "type": "boolean",
-                "description": "True only if this is a currently-open opportunity the artist described below is genuinely eligible for.",
+                "description": "True only if this is a currently-open opportunity with a real, active application process as of today.",
             },
             "issues": {
                 "type": "string",
-                "description": "If match is false, the specific reason for rejection. If match is true, 'OK'.",
+                "description": "If is_live is false, the specific reason. If is_live is true, 'OK'.",
+            },
+            "deadline": {
+                "type": "string",
+                "description": "The real application/entry deadline as stated on the page, in YYYY-MM-DD format — even if it differs from, or is more specific than, the scraped deadline given below. Empty string only if the page genuinely states no deadline (rolling/ongoing).",
+            },
+            "hard_exclusions": {
+                "type": "string",
+                "description": "Any categorical eligibility restriction that disqualifies whole groups of applicants — e.g. 'Restricted to Portland, OR residents', 'Open only to adjunct educators', 'US citizens/residents only'. Describe who is excluded, objectively — not relative to any specific applicant, since this tool serves many different artists. Never a medium restriction (that always goes in mediums, not here). Empty string if open to artists generally.",
             },
             "eligibility_notes": {
                 "type": "string",
-                "description": "Any eligibility restriction or priority worth surfacing up front (e.g. a community/demographic priority, a specific-region focus) — even when it doesn't disqualify the artist. Empty string if there's nothing notable.",
+                "description": "Any preference or priority given to a particular group that does NOT disqualify anyone else — e.g. 'Priority for artists with ties to X community'. Empty string if there's nothing notable.",
             },
             "mediums": {
                 "type": "string",
@@ -1082,8 +1313,15 @@ _L3_TOOL = {
                 "type": "string",
                 "description": "One sentence on the theme or purpose of this opportunity, e.g. what kind of work or statement it's looking for.",
             },
+            "summary": {
+                "type": "string",
+                "description": "A clean, accurate 2-3 sentence overview written from the actual page content — what the opportunity is, its format (residency/grant/exhibition/etc.), and any concrete practical detail worth knowing (application fee amount if any, whether it's virtual/in-person, notable logistics). Correct the scraped description below if the page contradicts it (e.g. it claims no fee but the page states one). Never truncate mid-sentence — write complete sentences within the 2-3 sentence budget.",
+            },
         },
-        "required": ["match", "issues", "eligibility_notes", "mediums", "theme_summary"],
+        "required": [
+            "is_live", "issues", "deadline", "hard_exclusions",
+            "eligibility_notes", "mediums", "theme_summary", "summary",
+        ],
     },
 }
 
@@ -1091,14 +1329,21 @@ _L3_TOOL = {
 def validate_L3(opportunities: list) -> tuple:
     """
     For each opportunity, fetch its source URL and ask Claude Haiku to verify the scraped
-    title, description, and deadline against the live page content — and to check
-    eligibility against _ARTIST_PROFILE, and pull out eligibility notes, mediums, and a
-    theme one-liner for the email write-up. Returns (verified, flagged).
+    title, description, and deadline against the live page content, and extract
+    structured eligibility/medium/theme data for the email write-up. Returns
+    (verified, flagged).
 
-    Anchors "is this still open" to today's actual date (the previous version never
-    stated it, leaving the model to guess — it once concluded an October deadline had
-    "passed" while reasoning from the wrong idea of what day it was). Uses forced
-    tool-use rather than a free-text-plus-regex JSON pull, for the same reliability reason
+    Deliberately profile-independent (Art Grant Finder V2) — this used to also judge
+    eligibility against one hardcoded artist and reject on a mismatch; that judgment now
+    belongs to the per-artist matching stage, since this tool serves multiple artists with
+    different profiles. L3's job is narrower: is this opportunity genuinely live and real,
+    and what are its own objective eligibility characteristics (hard_exclusions /
+    eligibility_notes / mediums / theme_summary) — not who, specifically, it's for.
+
+    Anchors "is this still open" to today's actual date (a past version never stated it,
+    leaving the model to guess — it once concluded an October deadline had "passed" while
+    reasoning from the wrong idea of what day it was). Uses forced tool-use rather than a
+    free-text-plus-regex JSON pull, for the same reliability reason
     _extract_grants_from_emails was moved off that pattern.
     """
     if not opportunities:
@@ -1125,17 +1370,19 @@ def validate_L3(opportunities: list) -> tuple:
             page_text = _html_to_text(r.text)[:12000]
 
             prompt = (
-                "You are a quality filter for an artist grant finder tool. "
-                f"Today's date is {today_str}. Review this page content and the scraped "
-                "opportunity data.\n\n"
+                "You are a quality filter for an artist grant finder tool that serves "
+                "several different artists with different profiles — do not judge "
+                "eligibility for any specific person here; just assess whether this is a "
+                f"real, currently-open opportunity, and describe its own eligibility "
+                f"structure objectively. Today's date is {today_str}. Review this page "
+                "content and the scraped opportunity data.\n\n"
                 f"Scraped data:\n"
                 f"Title: {opp.title}\n"
                 f"Description: {opp.description}\n"
                 f"Deadline: {opp.deadline or 'not found'}\n"
                 f"Apply URL: {opp.apply_url}\n\n"
                 f"Source page content (truncated to 12000 chars):\n{page_text}\n\n"
-                f"The artist applying is: {_ARTIST_PROFILE}\n\n"
-                "Reject this entry (match: false) if ANY of the following are true:\n"
+                "Mark is_live: false if ANY of the following are true:\n"
                 f"- The opportunity is closed, or its deadline has already passed as of {today_str} "
                 "(compare the actual dates carefully — do not assume a future-dated deadline has passed)\n"
                 "- This is an informational or about page with no active application process\n"
@@ -1143,28 +1390,31 @@ def validate_L3(opportunities: list) -> tuple:
                 "- This is a general programme overview with no currently open call\n"
                 "- There is no clear way for an artist to apply right now\n"
                 "- The page is navigation, a folder index, or a category listing\n"
-                "- The content is primarily about a past event or past cycle\n"
-                "- Eligibility is genuinely restricted to a specific region, role, or group that "
-                "excludes the artist described above (e.g. residents of a different specific city/"
-                "state only, or restricted to educators/curators/students when the artist is none "
-                "of those) — but do NOT reject for a stated preference or priority given to a "
-                "particular group when others remain eligible to apply; note that in "
-                "eligibility_notes instead. Never reject for a medium restriction (e.g. "
-                "sculpture-only, painting-only) or for uncertainty about whether the artist works "
-                "in that medium — record the medium in the mediums field instead, and approve "
-                "on every other merit as normal\n\n"
-                "Only approve (match: true) if ALL of the following are true:\n"
+                "- The content is primarily about a past event or past cycle\n\n"
+                "Only mark is_live: true if ALL of the following are true:\n"
                 "- There is an active, open opportunity that artists can currently apply for OR "
                 "an upcoming opportunity with a future deadline clearly stated\n"
                 "- There is a clear application process or link to apply\n"
-                "- The opportunity is relevant to visual artists or artists generally\n"
-                "- The artist described above is actually eligible to apply\n\n"
-                "Call review_opportunity with your verdict."
+                "- The opportunity is relevant to visual artists or artists generally\n\n"
+                "Separately, regardless of is_live, describe the opportunity's own eligibility "
+                "structure objectively: hard_exclusions for any categorical restriction that "
+                "disqualifies whole groups (a specific region, a role like educator/curator/"
+                "student, a citizenship/residency requirement) — never a medium restriction, "
+                "medium always goes in the mediums field instead, never as an exclusion. "
+                "eligibility_notes for a stated preference/priority that does NOT disqualify "
+                "anyone else from applying.\n\n"
+                "Also extract the REAL deadline stated on the page (not just our own scraped "
+                "guess above) — read carefully for an explicit date, including phrasing like "
+                "'CLOSED: <date>' or 'Deadline: <date>', and write a clean 2-3 sentence summary "
+                "of what this actually is, correcting the scraped description above if the page "
+                "contradicts it (e.g. a stated application fee the scraped description says "
+                "doesn't exist). Never leave the summary truncated mid-sentence.\n\n"
+                "Call review_opportunity with your findings."
             )
 
             result, ok = _forced_tool_call(
                 client, _L3_TOOL, "review_opportunity", prompt,
-                max_tokens=500, log_context=f"L3 check for {opp.title!r}",
+                max_tokens=1024, log_context=f"L3 check for {opp.title!r}",
             )
             if not ok:
                 opp.flagged = True
@@ -1172,13 +1422,33 @@ def validate_L3(opportunities: list) -> tuple:
                 flagged.append(opp)
                 continue
 
-            match = result.get("match", False)
+            is_live = result.get("is_live", False)
             issues = result.get("issues", "AI could not verify")
 
-            if match:
+            # Defensive, code-level date check — don't just trust the model's is_live
+            # judgment for something this consequential (the same reasoning as
+            # anchoring "today" via _today() rather than letting the model guess). If
+            # it extracted a real, parseable deadline that's already passed, that
+            # overrides is_live regardless of what the model otherwise concluded.
+            extracted_deadline = (result.get("deadline") or "").strip()
+            parsed_extracted = _parse_flexible_date(extracted_deadline) if extracted_deadline else None
+            if parsed_extracted is not None and parsed_extracted < _today():
+                is_live = False
+                issues = f"Deadline extracted from page ({extracted_deadline}) has already passed"
+
+            if is_live:
+                opp.hard_exclusions = result.get("hard_exclusions", "")
                 opp.eligibility_notes = result.get("eligibility_notes", "")
                 opp.mediums = result.get("mediums", "")
                 opp.theme_summary = result.get("theme_summary", "")
+                summary = (result.get("summary") or "").strip()
+                if summary:
+                    opp.description = summary
+                # Only replace the scraped deadline with a MORE specific one — never
+                # blank out an existing deadline just because this pass found nothing
+                # (a thin page section, an ambiguous format) to extract instead.
+                if parsed_extracted is not None:
+                    opp.deadline = extracted_deadline
                 verified.append(opp)
             else:
                 opp.flagged = True
@@ -1193,6 +1463,397 @@ def validate_L3(opportunities: list) -> tuple:
 
     log.info(f"L3: {len(verified)} verified, {len(flagged)} flagged")
     return verified, flagged
+
+
+# ---------------------------------------------------------------------------
+# Per-artist matching (Art Grant Finder V2)
+# ---------------------------------------------------------------------------
+
+_MATCH_TOOL = {
+    "name": "record_matches",
+    "description": "Record eligibility and match quality for a batch of opportunities against one artist's profile.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "matches": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "opportunity_url": {"type": "string"},
+                        "eligible": {
+                            "type": "boolean",
+                            "description": "False only if the opportunity's hard_exclusions genuinely disqualify this specific artist (wrong region, wrong role, etc.). A stated preference/priority for another group does NOT make this false.",
+                        },
+                        "score": {
+                            "type": "integer",
+                            "description": "0-100 fit score based on how well the opportunity's mediums/theme/location match this artist's profile. Provide a number even when eligible is false (0 is fine).",
+                        },
+                        "rationale": {
+                            "type": "string",
+                            "description": "One sentence explaining the eligible/score decision for this specific artist.",
+                        },
+                    },
+                    "required": ["opportunity_url", "eligible", "score", "rationale"],
+                },
+            },
+        },
+        "required": ["matches"],
+    },
+}
+
+_MATCH_CHUNK_SIZE = 25
+_MATCH_THRESHOLD = 40
+
+
+def _candidate_artists(conn, run_today: date) -> list:
+    """Active artists past their onboarding delay (or bootstrap-exempted)."""
+    rows = conn.execute(
+        "SELECT * FROM artist_profiles WHERE active = 1 AND first_synced_run < ?",
+        (run_today.isoformat(),),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _candidate_opportunities_for_artist(conn, artist_id: int, run_today: date) -> list:
+    """
+    Opportunities never yet evaluated for this artist (no matches row at all — covers
+    both genuinely-new opportunities and ones a prior failed batch never got to) that
+    haven't passed their deadline. NULL-deadline opportunities never self-expire, so
+    they're always included, sorted LAST (not first): a chunk failure should always land
+    on the least time-sensitive items first, never push a real near-term deadline into a
+    later, more failure-exposed chunk.
+    """
+    rows = conn.execute("""
+        SELECT o.* FROM opportunities o
+        LEFT JOIN matches m ON m.artist_id = ? AND m.opportunity_url = o.url
+        WHERE m.id IS NULL
+    """, (artist_id,)).fetchall()
+
+    candidates = []
+    for row in rows:
+        d = dict(row)
+        parsed = _parse_flexible_date(d.get("deadline"))
+        if parsed is not None and parsed < run_today:
+            continue
+        d["_parsed_deadline"] = parsed
+        candidates.append(d)
+
+    candidates.sort(key=lambda d: d["_parsed_deadline"] or date.max)
+    return candidates
+
+
+def _chunk(items: list, size: int) -> list:
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+def run_matching(run_today: date) -> dict:
+    """
+    Batched **per artist**, not per opportunity — bounds API call count by artist count
+    (which stays small and controlled) rather than opportunity volume (which doesn't),
+    and isolates failure blast radius to one artist's one chunk rather than every
+    artist's visibility into one opportunity. Mirrors categorize()'s own existing
+    batch-everything-into-one-call pattern.
+
+    Each artist's pending opportunities are capped at _MATCH_CHUNK_SIZE per call — a new
+    artist's first run can face a large accumulated backlog, and an uncapped single call
+    risks the same max_tokens-truncation failure BUG-035 hit. A failed/truncated chunk
+    writes zero matches rows for that chunk; the anti-join in
+    _candidate_opportunities_for_artist is the only retry signal, so a failure just means
+    "try again next run" — global scrape-dedup (_mark_seen) is completely unaffected by
+    anything in here, so a matching failure can never make an opportunity vanish.
+
+    Returns per-artist stats for the admin summary:
+    {artist_email: {"evaluated": N, "pending_send": N, "errors": N}}.
+
+    Each chunk's writes commit in their own short transaction (not one transaction for
+    the whole function) — with everything in a single `with _conn()` block, a later
+    artist's or chunk's exception would roll back every earlier chunk's already-good
+    matches too, on top of skipping delivery/the admin summary for the entire run. Since
+    a failed chunk is already designed to write zero rows and be safely retried next run
+    (the anti-join in _candidate_opportunities_for_artist), there's no reason its failure
+    should also erase unrelated, already-succeeded work.
+    """
+    client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    stats: dict = {}
+
+    with _conn() as conn:
+        artists = _candidate_artists(conn, run_today)
+
+    for artist in artists:
+        with _conn() as conn:
+            candidates = _candidate_opportunities_for_artist(conn, artist["id"], run_today)
+        artist_stats = {"evaluated": 0, "pending_send": 0, "errors": 0}
+
+        for chunk in _chunk(candidates, _MATCH_CHUNK_SIZE):
+            opp_lines = "\n".join(
+                f"- url: {o['url']}\n"
+                f"  title: {o['title']}\n"
+                f"  description: {o.get('description') or ''}\n"
+                f"  deadline: {o.get('deadline') or 'not specified'}\n"
+                f"  hard_exclusions: {o.get('hard_exclusions') or 'none stated'}\n"
+                f"  eligibility_notes: {o.get('eligibility_notes') or 'none'}\n"
+                f"  mediums: {o.get('mediums') or 'not specified'}\n"
+                f"  theme: {o.get('theme_summary') or 'not specified'}"
+                for o in chunk
+            )
+            # Deliberately no name/email here — matching only needs the artist's
+            # attributes, never their identity, so the profile sent to the API is
+            # pseudonymous. Results are correlated back to the real artist entirely
+            # in our own code (artist["id"]), never via anything in this prompt.
+            prompt = (
+                "You are matching artist grant/open-call opportunities against one "
+                "specific artist's profile (identified only by the attributes below, "
+                "never by name).\n\n"
+                f"Artist profile:\n"
+                f"Nationality: {artist.get('nationality') or 'not specified'}\n"
+                f"Gender identity: {artist.get('gender_identity') or 'not specified'}\n"
+                f"Sexual orientation: {artist.get('sexual_orientation') or 'not specified'}\n"
+                f"Racial/ethnic background: {artist.get('racial_ethnic_background') or 'not specified'}\n"
+                f"Disability: {artist.get('disability') or 'not specified'}\n"
+                f"Age: {artist.get('age') or 'not specified'}\n"
+                f"Location: {artist.get('location') or 'not specified'}\n"
+                f"Artistic discipline: {artist.get('artistic_discipline') or 'not specified'}\n"
+                f"Geographic areas of interest: {artist.get('geographic_area_of_interest') or 'not specified'}\n"
+                f"Opportunity types of interest: {artist.get('opportunities_of_interest') or 'not specified'}\n"
+                f"Artist bio: {artist.get('bio') or 'not specified'}\n"
+                f"Artist statement: {artist.get('statement') or 'not specified'}\n\n"
+                f"Candidate opportunities:\n{opp_lines}\n\n"
+                "For each opportunity, decide:\n"
+                "- eligible: false ONLY if the opportunity's hard_exclusions genuinely "
+                "disqualify this artist — by region, role, citizenship/nationality, or "
+                "another stated demographic requirement (e.g. restricted to a specific "
+                "race/ethnicity, disability status, or sexual orientation this artist "
+                "doesn't share). A stated preference in eligibility_notes for another "
+                "group does NOT disqualify.\n"
+                "- score (0-100): how well this fits the artist's discipline/themes/"
+                "location AND their own stated geographic areas of interest and "
+                "opportunity types of interest — score lower if the opportunity's type "
+                "or location falls outside what they said they're looking for, even "
+                "when they'd still be eligible to apply. Never lower the score just "
+                "because their exact discipline isn't confirmed for a "
+                "discipline-specific opportunity. If eligibility_notes states a "
+                "preference/priority for a specific group (a heritage, identity, or "
+                "named local community) and nothing in the artist's profile suggests "
+                "they belong to that group, reduce the score somewhat to reflect their "
+                "lower realistic odds of selection — they're still eligible and should "
+                "still be told about it, just scored lower than someone who actually "
+                "matches the stated priority.\n"
+                "- rationale: one sentence explaining the eligible/score decision.\n\n"
+                "Call record_matches with one entry per opportunity listed above."
+            )
+
+            # The whole chunk — API call plus DB write — is one try/except: an
+            # unexpected raise anywhere in here (a network error out of
+            # _forced_tool_call, not just a bad DB write) must never abort matching
+            # for every artist/chunk still to come, which would also skip delivery
+            # and the admin summary for the entire run. Already-committed earlier
+            # chunks are unaffected either way, since each one commits in its own
+            # short transaction below rather than one held open for the whole run.
+            try:
+                result, ok = _forced_tool_call(
+                    client, _MATCH_TOOL, "record_matches", prompt,
+                    max_tokens=4096, log_context=f"Matching for {artist['email']!r}",
+                )
+                if not ok:
+                    artist_stats["errors"] += 1
+                    log.warning(
+                        f"Matching failed for {artist['email']!r} on a chunk of "
+                        f"{len(chunk)} — will retry next run"
+                    )
+                    continue
+
+                by_url = {o["url"] for o in chunk}
+                with _conn() as conn:
+                    for m in result.get("matches", []):
+                        url = m.get("opportunity_url", "")
+                        if url not in by_url:
+                            continue  # ignore anything not actually in this chunk
+
+                        # Fail closed: only a literal bool True or the string "true"
+                        # counts as eligible. bool("false") is True in Python, so a
+                        # malformed non-bool response must never be read as eligible.
+                        eligible_raw = m.get("eligible", False)
+                        if isinstance(eligible_raw, bool):
+                            eligible = eligible_raw
+                        elif isinstance(eligible_raw, str):
+                            eligible = eligible_raw.strip().lower() == "true"
+                        else:
+                            eligible = False
+
+                        score = int(m.get("score", 0) or 0)
+                        rationale = m.get("rationale", "")
+
+                        if not eligible:
+                            status = "ineligible"
+                        elif score < _MATCH_THRESHOLD:
+                            status = "below_threshold"
+                        else:
+                            status = "pending_send"
+                            artist_stats["pending_send"] += 1
+
+                        conn.execute("""
+                            INSERT INTO matches (artist_id, opportunity_url, eligible, score, rationale, status)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(artist_id, opportunity_url) DO NOTHING
+                        """, (artist["id"], url, int(eligible), score, rationale, status))
+                        artist_stats["evaluated"] += 1
+            except Exception as e:
+                artist_stats["errors"] += 1
+                log.error(
+                    f"Matching: unexpected failure on a chunk for {artist['email']!r}: {e} "
+                    f"— will retry next run"
+                )
+
+        stats[artist["email"]] = artist_stats
+        log.info(f"Matching for {artist['email']!r}: {artist_stats}")
+
+    return stats
+
+
+def run_delivery(run_today: date) -> dict:
+    """
+    Attempts delivery for every 'pending_send' matches row, across all active artists —
+    both newly-evaluated this run and any carried over from a prior failed send.
+    Evaluation and delivery are separate concerns (see the matches.status design): a row
+    only ever becomes 'sent' once send_grants_email actually confirms success for that
+    specific artist, mirroring poll_gmail_inbox's own \\Seen-only-on-confirmed-success
+    discipline (BUG-035) — the same principle, just carried through to the SMTP side too.
+
+    Before attempting a send, rechecks each pending row's opportunity deadline against
+    run_today (the same threaded value used everywhere else this run) — if it's since
+    passed, the row moves to the terminal 'expired_undelivered' status rather than either
+    delivering a dead link or sitting in 'pending_send' forever, re-checked and
+    re-reported as a "pending retry" every week indefinitely.
+
+    Returns stats for format_admin_summary:
+    {"per_artist": {email: {"name":..., "sent": N, "avg_score": float|None}},
+     "send_failures": [{"email":..., "error":...}], "expired_undelivered": N}
+
+    Each artist's read/update/send is scoped to its own short transaction (not one
+    transaction for the whole function) — the same reasoning as run_matching: a later
+    artist's exception must never roll back an earlier artist's already-committed
+    'expired_undelivered'/'sent' status updates.
+    """
+    from core.tools.grants_email import format_artist_match_email, send_grants_email
+
+    per_artist_stats: dict = {}
+    send_failures = []
+    expired_count = 0
+
+    with _conn() as conn:
+        # Same active + first_synced_run filter as _candidate_artists — without it, a
+        # just-onboarded artist can appear in the same admin summary both as a "new
+        # signup" and as "0 matches above threshold," which is self-contradicting: they
+        # were never actually eligible for delivery this run in the first place.
+        artists = _candidate_artists(conn, run_today)
+
+    for artist in artists:
+        # Wraps the whole read/expire-check step for this artist — an unexpected
+        # exception here must never abort delivery for every artist still to come
+        # (or the admin summary that follows in scheduler.py), the same reasoning
+        # as run_matching's per-chunk try/except.
+        try:
+            with _conn() as conn:
+                rows = [dict(r) for r in conn.execute("""
+                    SELECT m.id AS match_id, m.opportunity_url, m.score,
+                           o.title, o.description, o.deadline, o.category, o.apply_link,
+                           o.eligibility_notes, o.mediums, o.theme_summary
+                    FROM matches m
+                    JOIN opportunities o ON o.url = m.opportunity_url
+                    WHERE m.artist_id = ? AND m.status = 'pending_send'
+                """, (artist["id"],))]
+
+                deliverable = []
+                for row in rows:
+                    parsed = _parse_flexible_date(row.get("deadline"))
+                    if parsed is not None and parsed < run_today:
+                        conn.execute(
+                            "UPDATE matches SET status='expired_undelivered' WHERE id=?",
+                            (row["match_id"],),
+                        )
+                        expired_count += 1
+                        log.info(
+                            f"Match expired before delivery (deadline passed): "
+                            f"{artist['email']!r} / {row['title']!r}"
+                        )
+                        continue
+                    deliverable.append(row)
+        except Exception as e:
+            per_artist_stats[artist["email"]] = {
+                "name": artist["name"], "sent": 0, "avg_score": None,
+            }
+            log.error(f"Delivery: failed to read/check pending matches for {artist['email']!r}: {e}")
+            continue
+
+        if not deliverable:
+            per_artist_stats[artist["email"]] = {
+                "name": artist["name"], "sent": 0, "avg_score": None,
+            }
+            continue
+
+        try:
+            opp_dicts = [
+                {
+                    "title": r["title"], "url": r["opportunity_url"], "deadline": r["deadline"],
+                    "category": r["category"], "description": r["description"],
+                    "apply_link": r["apply_link"], "eligibility_notes": r["eligibility_notes"],
+                    "mediums": r["mediums"], "theme_summary": r["theme_summary"], "score": r["score"],
+                }
+                for r in deliverable
+            ]
+            subject, html_body = format_artist_match_email(artist, opp_dicts)
+            sent_ok = send_grants_email(subject, html_body, to_addr=artist["email"])
+        except Exception as e:
+            # A formatting bug for one artist must never abort delivery for every
+            # artist still to come — their rows stay 'pending_send' and are safely
+            # retried next run.
+            per_artist_stats[artist["email"]] = {
+                "name": artist["name"], "sent": 0, "avg_score": None,
+            }
+            log.error(f"Delivery: failed to format/send digest for {artist['email']!r}: {e}")
+            continue
+
+        if sent_ok:
+            try:
+                with _conn() as conn:
+                    match_ids = [r["match_id"] for r in deliverable]
+                    conn.execute(
+                        f"UPDATE matches SET status='sent', sent_at=datetime('now') "
+                        f"WHERE id IN ({','.join('?' * len(match_ids))})",
+                        match_ids,
+                    )
+                avg_score = sum(r["score"] for r in deliverable) / len(deliverable)
+                per_artist_stats[artist["email"]] = {
+                    "name": artist["name"], "sent": len(deliverable), "avg_score": avg_score,
+                }
+                log.info(f"Delivered {len(deliverable)} match(es) to {artist['email']!r}")
+            except Exception as e:
+                # The email genuinely went out — report it as sent for this week's
+                # summary even though the status update itself failed. The DB still
+                # shows 'pending_send', so a persistent failure here (rare: nothing else
+                # in this run writes to the same rows) risks a duplicate send next run;
+                # accepted as a much smaller residual risk than the whole-loop rollback
+                # this restructure removes.
+                per_artist_stats[artist["email"]] = {
+                    "name": artist["name"], "sent": len(deliverable), "avg_score": None,
+                }
+                log.error(f"Delivered to {artist['email']!r} but failed to update match status: {e}")
+        else:
+            # Left as 'pending_send' — retried next run, never silently lost.
+            send_failures.append({"email": artist["email"], "error": "SMTP send failed — see log"})
+            per_artist_stats[artist["email"]] = {
+                "name": artist["name"], "sent": 0, "avg_score": None,
+            }
+            # ERROR, not warning — a real send failure needs to surface to monitoring,
+            # not just sit at INFO-adjacent severity.
+            log.error(f"Delivery failed for {artist['email']!r} — will retry next run")
+
+    return {
+        "per_artist": per_artist_stats,
+        "send_failures": send_failures,
+        "expired_undelivered": expired_count,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1400,6 +2061,7 @@ def run_grants_pipeline(dry_run: bool = False) -> list:
             "description":       opp.description,
             "apply_link":        opp.apply_url,
             "eligibility_notes": opp.eligibility_notes,
+            "hard_exclusions":   opp.hard_exclusions,
             "mediums":           opp.mediums,
             "theme_summary":     opp.theme_summary,
         }

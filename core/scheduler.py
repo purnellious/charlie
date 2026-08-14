@@ -153,27 +153,81 @@ async def _send_news_briefing(app: Application, is_retry: bool = False):
 
 async def _run_grants_pipeline(app: Application):
     """
-    Run the weekly artist grant finder pipeline and send the email.
-    Runs synchronous I/O (scraping, SMTP) in an executor to avoid blocking the event loop.
+    Run the weekly artist grant finder pipeline (Art Grant Finder V2 — multi-artist):
+    sync artist profiles from the Google Sheet, scrape/validate opportunities (unchanged
+    persistence timing — a matching failure below can never affect this), run per-artist
+    matching, attempt delivery of personalized digests, then send Jonathan an admin
+    summary. Runs synchronous I/O (scraping, SMTP, Anthropic calls) in an executor to
+    avoid blocking the event loop.
     """
     import asyncio
     try:
-        from core.tools.grants import run_grants_pipeline
-        from core.tools.grants_email import format_grants_email, send_grants_email
+        from core.tools.grants import (
+            run_grants_pipeline, sync_artist_profiles, get_new_signups,
+            run_matching, run_delivery, _today, init_db,
+        )
+        from core.tools.grants_email import (
+            format_admin_summary, format_no_artists_email, send_grants_email,
+        )
 
+        sheet_url = os.getenv("ARTIST_PROFILES_SHEET_URL", "").strip()
         loop = asyncio.get_event_loop()
 
         def _sync_run():
-            results = run_grants_pipeline(dry_run=False)
-            subject, html_body = format_grants_email(results)
-            success = send_grants_email(subject, html_body)
-            return len(results), success
+            # Computed once and threaded into sync/matching/delivery/new-signups below —
+            # not each independently calling _today(), which could drift if the run ever
+            # straddled midnight. Note this does NOT reach validate_L2/validate_L3 inside
+            # run_grants_pipeline() — those still call _today() independently; unchanged,
+            # pre-existing behavior from before this multi-artist rework, not reopened here.
+            run_today = _today()
 
-        count, success = await loop.run_in_executor(None, _sync_run)
-        if success:
-            log.info(f"Grants pipeline complete: {count} opportunities emailed")
+            # init_db() is otherwise only ever called from inside run_grants_pipeline()
+            # below — but sync_artist_profiles runs BEFORE that, so on a database that's
+            # never run the multi-artist migration yet, the sync would crash with "no
+            # such table: artist_profiles" on its very first real run. Idempotent
+            # (CREATE TABLE IF NOT EXISTS), so calling it again here is free.
+            init_db()
+
+            if sheet_url:
+                sync_artist_profiles(sheet_url, run_today)
+            else:
+                log.warning("ARTIST_PROFILES_SHEET_URL not set — skipping artist profile sync")
+
+            results = run_grants_pipeline(dry_run=False)
+            match_stats = run_matching(run_today)
+            delivery_stats = run_delivery(run_today)
+
+            if not match_stats:
+                # No active, past-onboarding-delay artists this run (Sheet unset/empty,
+                # or everyone's still in their onboarding delay) — without this, the
+                # admin summary below would be the ONLY email sent, and it's just counts
+                # with no actual listing. Send the raw scrape as a real, useful digest
+                # instead, matching the old single-recipient behavior.
+                subject, html_body = format_no_artists_email(results)
+                send_grants_email(subject, html_body)
+                log.warning(
+                    "Grants pipeline: no active artist profiles this run — sent the raw "
+                    "scrape listing to the admin instead of personalized digests"
+                )
+
+            admin_stats = {
+                "scraped": len(results),
+                "evaluated": sum(s.get("evaluated", 0) for s in match_stats.values()),
+                "per_artist": delivery_stats["per_artist"],
+                "new_signups": get_new_signups(run_today),
+                "send_failures": delivery_stats["send_failures"],
+                "expired_undelivered": delivery_stats["expired_undelivered"],
+            }
+            subject, html_body = format_admin_summary(admin_stats)
+            admin_sent = send_grants_email(subject, html_body)  # GRANT_RECIPIENT_EMAIL
+
+            return len(results), admin_sent
+
+        count, admin_sent = await loop.run_in_executor(None, _sync_run)
+        if admin_sent:
+            log.info(f"Grants pipeline complete: {count} opportunities scraped, admin summary sent")
         else:
-            log.error(f"Grants pipeline: {count} opportunities found but email send failed")
+            log.error(f"Grants pipeline: {count} opportunities scraped but admin summary send failed")
     except Exception as e:
         log.error(f"Grants pipeline failed: {e}")
 

@@ -97,3 +97,44 @@ via /distil when closing a topic. Loaded into Charlie's system prompt alongside 
 - Reminder set for Tuesday morning: if Zaheer hasn't responded to Ameena by close of business Monday, prompt Jonathan to follow up
 
 ---
+
+**Email management session — 11 August 2026**
+
+- **Standing rule confirmed:** All invoices and receipts should be forwarded to finance@ts.org with a brief covering note ("Hi guys / Here's the latest invoice/receipt from [sender] / Kind regards, Jonathan"), including all attachments and original email content. Jonathan had to remind Charlie of this mid-session — it is now in email-preferences.md.
+- **Bug logged — BUG-029:** Charlie consistently fails to read the most recent message in a thread, falling back to older messages as if they are the latest. Affected the 250 Maloney thread at least twice.
+- **Bug logged — BUG-030:** Batch deletes were falsely reporting "Deleted" when emails remained in the inbox. A fix was built and deployed mid-session; subsequent batch deletes appeared to work. Root cause may be stale search index rather than failed deletion.
+- **250 Maloney Road (property sale):** Erika Odle managing the sale. Current strategy: $20k+ concession, buyer's agent commission raised to 3%, asking price reduced to $780k. Jonathan agreed to proceed on these terms but noted a more aggressive approach would be needed if no offer by end of August. Moisture/humidity damage reported (buckling floors). Ball is in Erika's court.
+- **Watch sale (Jared Silver / MB&F):** MB&F service ticket submitted, awaiting quote. Boxes and papers still needed from Riccardo — Jonathan chased Jared on this.
+- **XTM token transfer (Preston Byrne / Coinbase):** 26,315,789 XTM to be sent to wallet 0x0D81B1f99d65Ac1d34FFc3BFe0D206a9c7B25778. Emma Northcott (Coinbase) awaiting confirmation of timing. Preston has relayed to Riccardo. Ball with Riccardo.
+- **Kala Holdings — Form D:** Filed and accepted by SEC (Aug 5, 2026, accession 0002147376-26-000001).
+- **Kala Holdings — cap table:** Sarah Campbell (Fidelity) says no need to start fresh; has instructions. Unresolved.
+- **Kala Holdings — Ellerra meeting:** Accepted 1pm EST Tuesday 11 August with Cary Barnhard.
+- **Payroll (Kuhn Partner / Saskia):** August 2026 payroll received. €2,500 net per employee; €3,513.62 to social insurance by Aug 27; €954.32 to tax office by Sep 10. Marked as read — unclear if actioned.
+- **Google Ads dispute:** $5,000 unauthorised charge from May 21, 2026 on card ending 0655 (used for GSuite, not Google Ads). Google confirmed unauthorised; advised to contact bank for chargeback. Unresolved.
+
+---
+
+**250 Maloney property (Erika Odle) — 13 August 2026**
+- Property at 250 Maloney cannot be subdivided per the zoning administrator
+- Erika reports multiple showings and an offer expected soon
+- Jonathan checked in on 13 August; ball is in Erika's court
+
+**Kala Holdings — ongoing threads — 13 August 2026**
+- Edge & Node Ventures NDA fully signed (all parties, ~6 Aug)
+- Thomas Pavey requesting due diligence docs: certificate of incorporation, bylaws, cap table, directors list, litigation confirmation, employment agreements, insurance policies
+- Funding round involves Peter Maxakov (Dubai), Deep Ventures, and Justin Stanford (4Di) in addition to Thomas Pavey
+- Sarah Campbell (Fidelity) can fix the cap table without starting fresh — needs a response
+
+**Twelve Sigma LLC debt — 13 August 2026**
+- Outstanding balance confirmed at R82,874.41 (inclusive of interest and legal costs)
+- Riccardo proposed offering R100k as settlement; Richard Matthews (Hanekom Attorneys) has communicated offer to Mr Coleman
+- Court date: 15 September 2026; notice of set down being filed
+
+**Extra Space Storage — 13 August 2026**
+- Unit 1072, Fishkill NY — payment of $541.00 due 18 August 2026
+- Payment reminder forwarded to finance@ts.org on 13 August (previous reminder also forwarded 11 August)
+
+**Inbox management behaviour note — 13 August 2026**
+- Bug logged (BUG-036): Charlie must not state negatives as fact when search coverage was insufficient; should default to "I'm not certain, let me check" before confirming absence of something
+
+---
