@@ -1006,3 +1006,37 @@ This exact failure class (`stop_reason == "max_tokens"` silently producing bad o
 **Repair:** topic 3407's corrupted message (id 2615) and the four resulting "Something went wrong" error messages were repaired directly in `charlie.db` (stripped the orphaned `tool_use` block, removed the stacked error messages) so the topic is usable again — done as a direct data fix, not by running Charlie or re-triggering any build.
 
 ---
+
+## BUG-038 — Daily gitpull.sh stashed uncommitted files and never popped, silently burying the entire CV builder project
+**Type:** Bug
+**Status:** Resolved
+**Priority:** High
+**Severity:** High — came within a routine `git gc`/stash-loss away from permanently destroying weeks of curated career data with no backup anywhere else
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-08-17
+**Topic ID:** N/A — found and fixed directly via Claude Code, not through a live Charlie session
+
+**Problem:**
+`com.charlie.gitpull` (this Mac's local launchd job, 9am daily) runs `gitpull.sh`, which does `git stash --include-untracked` before `git pull` to guarantee a clean tree to merge onto — but never ran `git stash pop` afterward. Any file that was ever uncommitted (tracked-and-modified or fully untracked) got swept into a stash and left out of the working tree, with no automatic path back. This had been quietly happening since at least 2026-08-04 (5 stash entries accumulated) and took the entire CV builder project down with it: `cv/` (18 company data files, `profile.yaml`, generated PDFs including real CVs sent for the Headway and Affirm applications) and `core/tools/cv/*.py` + `cv_builder.py` were all untracked, and each 9am run buried whatever existed at that moment. Jonathan noticed only when asking where a generated CV lived and the directory turned out not to exist.
+
+Ironically, a previous session had already half-fixed this on 2026-08-12 by adding `cv/` to `.gitignore` (so `--include-untracked` would skip it) — but that fix itself was uncommitted at the time, so it got swept into that very morning's stash and never took effect.
+
+**Root cause:** `gitpull.sh` treated `git stash` as a one-way clean-up step rather than a round-trip; nothing ever restored the stashed content, and stash entries simply piled up indefinitely (5 were found, dating back to 2026-07-28).
+
+**Recovery:** nothing was actually lost — `git stash` doesn't delete data. Located the untracked-files parent commit of each relevant stash (`stash@{0}^3` for the 2026-08-13 stash, `stash@{1}^3` for 2026-08-12's) and `git checkout <ref> -- <path>`'d the CV code and data back into the working tree. Verified all 18 company files, `profile.yaml`, `ingestion-notes.md`, all 17 output PDFs, and all 6 `core/tools/cv/` code files plus `cv_builder.py` are present and intact.
+
+**Fix implemented, 2026-08-17:**
+- `.gitignore`: re-added `cv/` (restoring the lost 2026-08-12 fix) — personal CV data now stays untracked-but-ignored, so `--include-untracked` never touches it.
+- `cv_builder.py` and `core/tools/cv/*.py`/`template.html` (actual code, not personal data) committed to git properly, per Jonathan's explicit approval — removes their exposure to this class of bug entirely, independent of the script fix below.
+- `gitpull.sh`: now records the stash count before/after the `git stash` call, and only runs `git stash pop` if this run actually created a new stash entry (an unconditional pop would instead reapply a stale, unrelated *older* stash on any day the tree was already clean — verified this distinction matters against the 3 pre-existing older stash entries still sitting in the stash list, which are unrelated CV content and were deliberately left untouched for Jonathan to review separately rather than dropped).
+- A pop failure (merge conflict) logs to stderr and leaves the content safely in the stash rather than losing it — never silently discarded.
+
+**Deliberately not done:** the 3 remaining older stash entries (`stash@{2}` 2026-08-07, `stash@{3}` 2026-08-04, `stash@{4}` 2026-07-28 pre-fix — indices will shift once the two consumed ones are dropped) were not inspected or dropped. They predate this fix and may contain other stale, already-superseded, or still-relevant content from other work. Flagged to Jonathan to review before anything drops them.
+
+**Not yet done:** no live-tested run of the fixed `gitpull.sh` against a real dirty-tree-at-9am scenario — the fix is code-reviewed by reasoning (verified via the stash-count-diff logic above) but not yet observed running for real overnight.
+
+**Touches:**
+`gitpull.sh`, `.gitignore`, `core/tools/cv/*.py`, `core/tools/cv/template.html`, `cv_builder.py`
+
+---

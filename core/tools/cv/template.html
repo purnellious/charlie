@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ profile.name }} — CV</title>
+<style>
+  @page {
+    size: Letter;
+    margin: 0.5in 0.7in;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Times New Roman", Times, Georgia, serif;
+    font-size: 10.5pt;
+    line-height: 1.15;
+    color: #000;
+    margin: 0;
+    text-align: justify;
+  }
+
+  h1.name {
+    font-size: 13pt;
+    font-weight: bold;
+    text-align: center;
+    text-transform: uppercase;
+    margin: 0 0 4px 0;
+  }
+  .contact-grid {
+    font-size: 10pt;
+    margin-bottom: 8px;
+  }
+  .contact-grid .row {
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .summary {
+    font-weight: bold;
+    font-size: 10pt;
+    margin: 0 0 8px 0;
+  }
+
+  h2.section {
+    font-size: 10.5pt;
+    font-weight: bold;
+    text-transform: uppercase;
+    border-top: 1.5px solid #000;
+    padding-top: 2px;
+    margin: 6px 0 2px 0;
+  }
+
+  .role { margin-bottom: 2px; }
+  .role-line {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .role-line .company { font-weight: bold; }
+  .role-line .location { font-weight: normal; }
+  .role-line .dates { font-weight: normal; white-space: nowrap; }
+  .role-title { font-weight: bold; }
+  .role-description {
+    font-weight: normal;
+    margin: 0;
+  }
+  ul.bullets {
+    margin: 0 0 4px 0;
+    padding-left: 14px;
+  }
+  ul.bullets li { margin-bottom: 0; }
+
+  .education-entry { margin-bottom: 2px; }
+  .education-row {
+    display: flex;
+    justify-content: space-between;
+  }
+  .education-row .institution { font-weight: bold; }
+  .education-degree { font-weight: normal; }
+  .education-honors { font-weight: normal; }
+
+  .personal-info { margin-top: 2px; }
+</style>
+</head>
+<body>
+
+<h1 class="name">{{ profile.name }}</h1>
+<div class="contact-grid">
+  <div class="row">
+    <span>{{ profile.contact.address_line1 }}</span>
+    <span>{{ profile.contact.email }}</span>
+  </div>
+  <div class="row">
+    <span>{{ profile.contact.address_line2 }}</span>
+    <span>{{ profile.contact.phone }}</span>
+  </div>
+</div>
+
+{% if tailored_cv.summary %}
+<p class="summary">{{ tailored_cv.summary }}</p>
+{% endif %}
+
+<h2 class="section">Professional Experience</h2>
+{# build.py's _tailored_cv_as_text() hand-mirrors this role block's fields
+   (company_name, location, date_range, role_title, company_description,
+   bullets) as plain text for the CV reviewer — if you add/rename/remove a
+   rendered field here, update that function too, or the reviewer judges
+   stale/incomplete text against what's actually on the page. #}
+{% for role in tailored_cv.roles %}
+<div class="role">
+  <div class="role-line">
+    <span><span class="company">{{ role.company_name }}</span>{% if role.location %}<span class="location">, {{ role.location }}</span>{% endif %}</span>
+    <span class="dates">{{ role.date_range }}</span>
+  </div>
+  <div class="role-title">{{ role.role_title }}</div>
+  {% if role.company_description %}
+  <div class="role-description">{{ role.company_description }}</div>
+  {% endif %}
+  {% if role.bullets %}
+  <ul class="bullets">
+    {% for bullet in role.bullets %}<li>{{ bullet }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% endfor %}
+
+{% if profile.education %}
+<h2 class="section">Education</h2>
+{% for edu in profile.education if edu.degree %}
+<div class="education-entry">
+  <div class="education-row">
+    <span><span class="institution">{{ edu.institution }}</span>{% if edu.grad_year %}, {{ edu.grad_year }}{% endif %}{% if edu.location %}, {{ edu.location }}{% endif %}</span>
+  </div>
+  {% if edu.degree %}<div class="education-degree">{{ edu.degree }}</div>{% endif %}
+  {% if edu.honors %}
+  {% for honor in edu.honors %}<div class="education-honors">{{ honor }}</div>{% endfor %}
+  {% endif %}
+</div>
+{% endfor %}
+{% endif %}
+
+{% if profile.personal_information %}
+<h2 class="section">Personal Information</h2>
+<div class="personal-info">
+  {% if profile.personal_information.nationality or profile.personal_information.immigration_status %}
+  <div>
+    {%- if profile.personal_information.nationality %}Nationality and immigration status: {{ profile.personal_information.nationality }}{% endif -%}
+    {%- if profile.personal_information.nationality and profile.personal_information.immigration_status %} | {% endif -%}
+    {%- if profile.personal_information.immigration_status %}{{ profile.personal_information.immigration_status }}{% endif -%}
+  </div>
+  {% endif %}
+  {% if profile.personal_information.languages %}
+  <div>Languages: {{ profile.personal_information.languages | join(" | ") }}</div>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if tailored_cv.interests %}
+<h2 class="section">Interests</h2>
+<div class="personal-info">{{ tailored_cv.interests | join(" | ") }}</div>
+{% endif %}
+
+</body>
+</html>

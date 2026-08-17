@@ -1,6 +1,7 @@
 .env
 charlie.md
 email-preferences.md
+cv/
 venv/
 data/
 *.db
