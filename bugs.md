@@ -1040,3 +1040,32 @@ Ironically, a previous session had already half-fixed this on 2026-08-12 by addi
 `gitpull.sh`, `.gitignore`, `core/tools/cv/*.py`, `core/tools/cv/template.html`, `cv_builder.py`
 
 ---
+
+## BUG-039 — No prompt caching on Charlie's direct Anthropic API calls
+**Type:** Debt
+**Status:** Open
+**Priority:** Medium
+**Severity:** Medium — likely unnecessary API spend, not a correctness issue
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-08-17 (originally flagged 2026-08-03, but the drafted bug report never made it into this file — see note below)
+**Topic ID:** TBD
+
+**Problem:**
+Anthropic sent a "prompt cache hit rate is low" notice for Jonathan's Individual Org, estimating up to 45% savings on direct API spend from caching repeated content (explicitly excludes Claude Code, which caches automatically). Charlie is the candidate: `core/agent.py` calls `anthropic.AsyncAnthropic` directly with `system=_build_system_prompt()` — a system prompt assembled from `principles.md` + `charlie.md` + `devlog.md` + `context-archive.md`, all of which are stable within a session and re-sent on every single turn per the full per-topic history. Grepped `core/agent.py` and `core/world_cup_scheduler.py` (the only two direct-API callers as of the original 2026-08-03 flag): no `cache_control` anywhere. Re-confirmed still true as of 2026-08-17. This is a plain miss, not a broken cache — nothing is currently marked cacheable at all.
+
+Not yet confirmed whether this is worth fixing: session/topic volume may be low enough that the savings are marginal, and `_build_system_prompt()`'s exact composition needs to be checked for anything that would break the cache (e.g. `context-archive.md` changing mid-session, any interpolated per-request value like a timestamp).
+
+**Note on why this is only being logged now:** this bug was drafted on 2026-08-03 but the edit to this file was never committed — it got caught by [[BUG-038]] (`gitpull.sh`'s daily stash-and-never-pop), sitting unrecovered in `git stash` for two weeks until BUG-038's stash review turned it up. By the time it could be restored, the number it planned to use (BUG-030) had already been taken by an unrelated, later-logged bug (email deletions falsely reported as successful), so it's logged here under a fresh number instead.
+
+**What needs fixing:**
+1. Check whether the flagged four files are actually static within a topic session (any per-request interpolation — timestamp, topic-specific state — defeats caching if it lands before the cache breakpoint).
+2. If static, add `cache_control: {"type": "ephemeral"}` to the last block of the system prompt in both `agent.py` and `world_cup_scheduler.py`.
+3. Verify hits via `response.usage.cache_read_input_tokens` after a couple of turns in the same topic — should be nonzero on the second+ turn.
+4. Decide 5-minute vs 1-hour TTL based on actual message cadence per topic (bursty topics separated by long gaps favor 1-hour).
+5. Weigh against [[feedback_cost_efficiency]] — this is exactly the kind of "flag expensive/resource-heavy pattern" Jonathan asked to be proactively told about, so worth surfacing even if the fix turns out to be low-priority.
+
+**Touches:**
+`core/agent.py` (`_build_system_prompt()`, the `client.messages.create`/`stream` call), `core/world_cup_scheduler.py` (its own `AsyncAnthropic` call)
+
+---
