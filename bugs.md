@@ -1142,3 +1142,26 @@ Side effect of this: the always-on Mac's real auto-pull (raw `git pull`, no stas
 `gitpull.sh`, `com.charlie.gitpull.plist`
 
 ---
+
+## BUG-042 — Always-on Mac's real auto-pull job runs a raw `git pull` with none of gitpull.sh's stash safety
+**Type:** Debt
+**Status:** Open
+**Priority:** Low
+**Severity:** Low — no known incident from this; a resilience gap, not an active problem
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-09-14
+**Topic ID:** N/A (logged directly, not through Charlie)
+
+**Problem:**
+Found while investigating [[BUG-041]]. The always-on Mac's actual installed `~/Library/LaunchAgents/com.charlie.gitpull.plist` runs `/usr/bin/git -C /Users/jonathanpurnell/charlie pull origin main` directly — a plain `git pull`, with none of `gitpull.sh`'s stash-before/pop-after safety net. `gitpull.sh` exists in `~/charlie/gitpull.sh` on that machine (synced via git) but isn't actually wired up to anything there.
+
+A plain `git pull` aborts outright the moment the working tree is dirty (some file there is modified relative to the last commit) — unlike BUG-038's original failure mode (a stash silently never popped, burying work for weeks), a raw `git pull` failing is at least loud and non-destructive: it just refuses to merge and leaves things alone, logged to `gitpull.log`. So the risk here isn't silent data loss — it's that the daily auto-pull would simply stop applying new commits (silently, from Jonathan's point of view, since nothing surfaces the failure to him directly beyond the log file) until someone notices and manually cleans up whatever made the tree dirty.
+
+**What needs fixing:**
+Point the always-on Mac's real `com.charlie.gitpull.plist` (`ProgramArguments`) at `gitpull.sh` instead of a raw `git pull` — matching the primary Mac's own setup — so it gets the same stash/pop safety net. Needs host-specific paths throughout (per [[BUG-041]], launchd plists can't use variables): `/Users/jonathanpurnell/charlie/gitpull.sh`, `WorkingDirectory: /Users/jonathanpurnell/charlie`, log paths adjusted to match wherever `gitpull.log` should live there. Requires `launchctl unload`/`launchctl load` (or stop/start) of that specific job on the always-on Mac to pick up the changed plist — does not require restarting `com.charlie` itself, since this job is unrelated to the running bot process.
+
+**Touches:**
+`~/Library/LaunchAgents/com.charlie.gitpull.plist` on the always-on Mac only (not a git-tracked file — a locally-installed, host-specific config)
+
+---
