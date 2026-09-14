@@ -53,14 +53,14 @@ def load_history(topic_id: int) -> list:
     return messages
 
 
-def save_message(topic_id: int, role: str, content):
+def _serialize_content(content) -> str:
     """
-    Save a message to history.
-    content can be a plain string or a list of API response blocks.
-    Thinking blocks are stripped before storage — they don't need to persist.
+    Turn a message's content (a plain string or a list of API response blocks) into
+    the JSON string stored in the messages table. Thinking blocks are stripped —
+    they don't need to persist.
     """
     if isinstance(content, str):
-        content_to_store = json.dumps(content)
+        return json.dumps(content)
     elif isinstance(content, list):
         serialized = []
         for block in content:
@@ -74,16 +74,47 @@ def save_message(topic_id: int, role: str, content):
                 serialized.append(block)
             else:
                 serialized.append(str(block))
-        content_to_store = json.dumps(serialized)
+        return json.dumps(serialized)
     else:
-        content_to_store = json.dumps(str(content))
+        return json.dumps(str(content))
 
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            "INSERT INTO messages (topic_id, role, content) VALUES (?, ?, ?)",
-            (str(topic_id), role, content_to_store)
-        )
-        conn.commit()
+
+def save_message(topic_id: int, role: str, content):
+    """
+    Save a single message to history.
+    content can be a plain string or a list of API response blocks.
+    """
+    save_messages(topic_id, [(role, content)])
+
+
+def save_messages(topic_id: int, entries: list):
+    """
+    Save all of one turn's new messages (each entry a (role, content) pair) in a
+    single transaction — either every message from this turn is persisted, or none
+    are. Use this instead of looping over save_message() whenever the messages
+    being saved include a model-generated tool_use/tool_result pair.
+
+    BUG-040: a turn's messages were previously saved one at a time with no
+    transaction. A transient failure mid-loop (observed cause: a brief
+    'unable to open database file' hiccup) could persist a tool_use block from
+    one message while never reaching the save call for its paired tool_result —
+    permanently corrupting that topic's history, since every future turn resends
+    the same broken pair to the Anthropic API and gets rejected. Saving the whole
+    batch in one transaction means a mid-batch failure rolls back everything
+    already staged in it, so the pairing can never be split across a partial save.
+    """
+    if not entries:
+        return
+    rows = [(str(topic_id), role, _serialize_content(content)) for role, content in entries]
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        with conn:  # commits all rows on success, rolls back all of them on exception
+            conn.executemany(
+                "INSERT INTO messages (topic_id, role, content) VALUES (?, ?, ?)",
+                rows
+            )
+    finally:
+        conn.close()
 
 
 def delete_topic_history(topic_id: int):

@@ -22,7 +22,7 @@ if _CHARLIE_ROOT not in sys.path:
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from core.history import init_db, load_history, save_message, delete_topic_history
+from core.history import init_db, load_history, save_message, save_messages, delete_topic_history
 from core.scheduler import setup_scheduler, teardown_scheduler
 from core import state
 
@@ -431,10 +431,33 @@ async def _run_charlie_turn(update, context, topic_id: int, user_text: str):
         await send_and_save(context.bot, topic_id, f"Something went wrong — {e}")
         return
 
-    # Save the new messages (user message + assistant turn(s))
+    # Save the new messages (user message + assistant turn(s)) atomically — BUG-040:
+    # saving one row at a time here previously let a mid-loop failure persist a
+    # tool_use block without its paired tool_result, corrupting the topic permanently.
     new_messages = updated_messages[old_count:]
-    for msg in new_messages:
-        save_message(topic_id, msg["role"], msg["content"])
+    try:
+        save_messages(topic_id, [(msg["role"], msg["content"]) for msg in new_messages])
+    except Exception as e:
+        log.error(f"Failed to save turn history for topic {topic_id}: {e}")
+        # send_and_save's own save_message() call can itself raise if the same
+        # underlying condition (e.g. a still-ongoing 'unable to open database
+        # file' hiccup) hasn't cleared — guard it so that doesn't cascade into
+        # an uncaught exception and a confusing second notification via
+        # _global_error_handler; the Telegram message is what matters most here,
+        # and it's sent as a plain send rather than send_and_save to avoid a
+        # second write attempt against the same failing DB.
+        try:
+            await context.bot.send_message(
+                chat_id=GROUP_ID,
+                text=(
+                    f"Something went wrong saving that turn, so nothing from it was kept — "
+                    f"{e}. Please try again."
+                ),
+                message_thread_id=topic_id,
+            )
+        except Exception as send_err:
+            log.error(f"Also failed to notify topic {topic_id} about the save failure: {send_err}")
+        return
 
     # Handle a proposed charlie.md update
     proposed_update = proposals.get("charlie_doc")
@@ -783,6 +806,34 @@ def _wait_for_network(max_wait_seconds=120, attempt_timeout=5):
     log.warning(f"Network still not resolving after {max_wait_seconds}s — starting anyway")
 
 
+async def _global_error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Last-resort catch-all for any exception python-telegram-bot's dispatcher receives
+    that wasn't already handled by one of our own try/except blocks. BUG-040: without
+    this registered, PTB falls back to logging a bare one-line "No error handlers are
+    registered, logging exception" with no context and no notification to Jonathan —
+    which is exactly how the topic 3630 corruption went unnoticed for 17 minutes.
+    """
+    log.error("Unhandled exception reached the top-level dispatcher", exc_info=context.error)
+    topic_id = None
+    if (
+        isinstance(update, Update)
+        and update.effective_chat
+        and str(update.effective_chat.id) == GROUP_ID
+        and update.effective_message
+    ):
+        topic_id = update.effective_message.message_thread_id
+    if topic_id is not None:
+        try:
+            await context.bot.send_message(
+                chat_id=GROUP_ID,
+                text=f"Something went wrong that wasn't handled cleanly — {context.error}",
+                message_thread_id=topic_id,
+            )
+        except Exception:
+            log.error("Also failed to notify the topic about the unhandled exception", exc_info=True)
+
+
 def main():
     if not TOKEN:
         raise SystemExit("TELEGRAM_BOT_TOKEN is missing from .env")
@@ -816,6 +867,7 @@ def main():
         filters.StatusUpdate.FORUM_TOPIC_CREATED,
         on_topic_created,
     ))
+    app.add_error_handler(_global_error_handler)
     app.run_polling(drop_pending_updates=True)
 
 

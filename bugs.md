@@ -1069,3 +1069,46 @@ Not yet confirmed whether this is worth fixing: session/topic volume may be low 
 `core/agent.py` (`_build_system_prompt()`, the `client.messages.create`/`stream` call), `core/world_cup_scheduler.py` (its own `AsyncAnthropic` call)
 
 ---
+
+## BUG-040 — Non-atomic turn-history saves let a transient DB hiccup permanently orphan a tool_use block, and the exception was silently swallowed
+**Type:** Bug
+**Status:** Resolved (fix implemented, unit-tested, and code-reviewed; not yet deployed to the live always-on Mac — awaiting Jonathan's own restart)
+**Priority:** High
+**Severity:** High — same failure shape as BUG-037 (permanent per-topic corruption, every subsequent message 400s against Anthropic), but via a different, previously-unguarded code path; the triggering exception was invisible until Jonathan happened to retry 17 minutes later
+**Blocks anything current:** No
+**Rough effort:** Small (contained to `core/history.py` and `core/bot.py`)
+**Logged:** 2026-09-14
+**Topic ID:** 3630
+
+**Problem:**
+At 07:34:04 EDT, Jonathan sent an update to charlie.md context (retiring Human Agency and Moar Labs/Kala, adding NY Bar registration details). Charlie correctly called `propose_charlie_update`, and `handle_turn()` returned a perfectly well-formed set of new messages (tool_use paired correctly with its tool_result, in memory). The bug was one level up: `_run_charlie_turn()` in `core/bot.py` (pre-fix) saved that turn's new messages to `charlie.db` one row at a time in a loop, with no transaction and no error handling. It saved Jonathan's text and Charlie's `tool_use` message successfully, then the next `save_message()` call threw:
+```
+sqlite3.OperationalError: unable to open database file
+```
+— a brief, real filesystem hiccup on the always-on Mac (confirmed by simultaneous `emails.db` "unable to open database file" errors on `_poll_inbox_email`, recurring 6 times over ~10 minutes, and `httpx.ConnectError: nodename nor servname provided` on the heartbeat job — a genuine transient disruption, not a Charlie code bug in itself). The turn's `tool_result` (and anything after it) never got saved, permanently orphaning the `tool_use` already committed.
+
+**Compounding issue:** that save loop sits outside the only try/except in `_run_charlie_turn` (which wraps just the `handle_turn()` call), and Charlie's bot never registered a `python-telegram-bot` error handler — so the exception propagated all the way to PTB's own generic fallback, which just logged a bare one-line `"No error handlers are registered, logging exception."` with zero notification to Jonathan. He only learned anything was wrong 17 minutes later, when a retry replayed the corrupted history against Anthropic's API and got the 400 `tool_use`/`tool_result` pairing error — which is what actually got reported and investigated.
+
+**Root cause confirmed directly against `charlie.log`** (full traceback, not inferred): `core/bot.py:437` in `_run_charlie_turn` → `core/history.py:82` in `save_message` → `sqlite3.OperationalError: unable to open database file`. A near-simultaneous second exception (a different/retried update) failed even earlier, at `load_history()` — consistent with a broad, brief filesystem disruption rather than anything specific to this topic. A full scan of all 372 messages across all 104 topics in `charlie.db` found no other instances of this pattern — topic 3630 was the only one affected.
+
+**Fix implemented:**
+1. `core/history.py`: added `save_messages(topic_id, entries)` — saves a turn's messages in a single SQLite transaction (one connection, one `executemany`, commit-or-rollback as a whole via `with conn:`). A mid-batch failure now rolls back everything already staged in it, so a `tool_use`/`tool_result` pair can never be split across a partial save. `save_message()` (single-message) now delegates to it instead of duplicating the insert logic.
+2. `core/bot.py`: `_run_charlie_turn()`'s per-message save loop replaced with one `save_messages()` call, wrapped in try/except — a failure now cleanly tells Jonathan nothing from that turn was kept and asks him to retry, instead of silently corrupting history.
+3. `core/bot.py`: registered `_global_error_handler` via `app.add_error_handler(...)` — a last-resort catch-all so any future exception that still reaches PTB's dispatcher gets logged with full context and (when it can be scoped to Jonathan's own group chat) posted into the affected topic, instead of vanishing into PTB's bare fallback log line.
+
+**Code-review findings (high effort) and how each was handled:**
+- Global error handler didn't guard on `update.effective_chat.id == GROUP_ID` before sending, unlike every other handler — **fixed**, now guards consistently.
+- The save-failure recovery path's own `send_and_save()` call could itself raise if the same DB condition hadn't cleared, cascading into a confusing second notification via the new global handler — **fixed**, that recovery send is now a plain `send_message` wrapped in its own try/except, not `send_and_save`.
+- `save_message` duplicated `save_messages`' insert logic instead of delegating to it — **fixed**, `save_message` now just calls `save_messages(topic_id, [(role, content)])`.
+- No retry/backoff for the underlying transient DB failure itself — **deliberately deferred, flagged for Jonathan's sign-off**: the actual observed outage lasted several minutes (not sub-second), so a short in-process retry wouldn't have prevented this real incident anyway. Atomicity turns "permanent silent corruption" into "clean failure, please retry" — treating extended infra outages as a separate resilience question from the corruption bug this fix targets, not silently rolled in.
+
+**Tested:** `python3 -m py_compile` on both files. Standalone script (throwaway DB, not `charlie.db`) verifies: (1) a normal batch save persists all messages and round-trips correctly via `load_history()`; (2) `save_message()` still works standalone; (3) a simulated mid-batch failure (patched to raise partway through, reproducing the exact `sqlite3.OperationalError` class from the real incident) leaves **zero** rows persisted — confirming the orphaned-`tool_use` class of corruption is now structurally impossible via this path.
+
+**Not yet done:** live end-to-end verification against the deployed always-on Mac (Jonathan is restarting Charlie himself, separately, per his own request) and confirming the global error handler actually fires and posts correctly against a real forced exception in production.
+
+**Touches:**
+`core/history.py` (`_serialize_content`, `save_message`, new `save_messages`), `core/bot.py` (`_run_charlie_turn`'s save path, new `_global_error_handler`, `main()`)
+
+**Repair:** topic 3630's corrupted message (id 2718) and the two resulting "Something went wrong" error messages (ids 2720, 2727) were repaired directly in `charlie.db` (stripped the orphaned `tool_use` block, deleted the stacked error messages) — done as a direct data fix after backing up to `charlie.db.bak-pre-topic3630-repair`, not by running Charlie or re-triggering any build. The charlie.md update Jonathan dictated in the corrupted turn was never applied (the crash happened before Charlie ever showed him the proposal) — flagged to him directly rather than silently applied; he's re-doing it through Charlie himself.
+
+---
