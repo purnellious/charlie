@@ -10,7 +10,12 @@
 # an old leftover stash from a *previous* run when today's tree was already
 # clean, corrupting the working tree with stale content.
 set -e
-cd /Users/purnellious/charlie
+# Resolve to the directory this script actually lives in, rather than a
+# hardcoded absolute path — the previous hardcoded /Users/purnellious/charlie
+# only worked on the primary Mac; running this script as-is on any other
+# machine (a fresh checkout elsewhere, or a differently-named account) failed
+# immediately with "No such file or directory".
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 before_count=$(git stash list | wc -l)
 git stash --include-untracked --message "auto-stash before scheduled pull ($(date '+%Y-%m-%d %H:%M:%S'))"

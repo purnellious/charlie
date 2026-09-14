@@ -1112,3 +1112,33 @@ sqlite3.OperationalError: unable to open database file
 **Repair:** topic 3630's corrupted message (id 2718) and the two resulting "Something went wrong" error messages (ids 2720, 2727) were repaired directly in `charlie.db` (stripped the orphaned `tool_use` block, deleted the stacked error messages) — done as a direct data fix after backing up to `charlie.db.bak-pre-topic3630-repair`, not by running Charlie or re-triggering any build. The charlie.md update Jonathan dictated in the corrupted turn was never applied (the crash happened before Charlie ever showed him the proposal) — flagged to him directly rather than silently applied; he's re-doing it through Charlie himself.
 
 ---
+
+## BUG-041 — gitpull.sh and its plist template hardcode the primary Mac's absolute path, breaking on any other machine
+**Type:** Debt
+**Status:** Resolved
+**Priority:** Low
+**Severity:** Low — found while deploying BUG-040, but confirmed to have caused no live impact (see below); a portability/robustness gap, not an active outage
+**Blocks anything current:** No
+**Rough effort:** Small
+**Logged:** 2026-09-14
+**Topic ID:** N/A (found and fixed directly, not through Charlie)
+
+**Problem:**
+While manually deploying the BUG-040 fix to the always-on Mac, ran `~/charlie/gitpull.sh` there directly to pull the new commit and it failed immediately: `cd: /Users/purnellious/charlie: No such file or directory`. The script hardcoded `cd /Users/purnellious/charlie` (line 13) — correct for the primary Mac, but that path doesn't exist on the always-on Mac (`jonathanpurnell`'s home directory). The tracked `com.charlie.gitpull.plist` template in the repo has the same problem throughout (`ProgramArguments`, `WorkingDirectory`, `StandardOutPath`, `StandardErrorPath` all hardcode `/Users/purnellious/charlie`).
+
+**Initially misreported to Jonathan as an active, silently-failing scheduled job on the always-on Mac — corrected after checking further.** The always-on Mac's *actual* installed `~/Library/LaunchAgents/com.charlie.gitpull.plist` is a completely separate, correctly-configured file (not the git-tracked template) that runs a raw `git -C /Users/jonathanpurnell/charlie pull origin main` directly — it never calls `gitpull.sh` at all, and has been working fine on its daily 9am schedule. So there was no actual live outage: `gitpull.sh` on the always-on Mac is just a synced-over copy of the file that was never wired up to run there. The real (and much narrower) issue is just that the script and its template plist aren't portable if ever (re)installed fresh on a new/different machine — worth fixing for that reason, not because anything was actually broken today.
+
+Side effect of this: the always-on Mac's real auto-pull (raw `git pull`, no stash-protection) doesn't have BUG-038's stash/pop safety net that `gitpull.sh` has. Not changed as part of this fix — flagged as a possible follow-up below, not built.
+
+**Fix implemented:**
+- `gitpull.sh`: replaced the hardcoded `cd /Users/purnellious/charlie` with `cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` — resolves to wherever the script itself actually lives, regardless of machine or invocation method.
+- `com.charlie.gitpull.plist` (the git-tracked template): added a comment explaining every absolute path in it is specific to the primary Mac, that installing it as-is elsewhere will fail, and pointing at this bug.
+
+**Tested:** ran the fixed script for real (`bash /Users/purnellious/charlie/gitpull.sh` invoked from `/tmp`, an unrelated cwd) — correctly resolved to the repo directory, stashed an uncommitted edit, pulled, and popped the stash back cleanly. `plutil -lint` confirms the plist is still well-formed XML after the added comment.
+
+**Not done, deliberately:** did not touch the always-on Mac's actual live `com.charlie.gitpull.plist` or switch it to use `gitpull.sh` instead of its current raw `git pull` — that would add the BUG-038 stash-safety net there too, which might be worth doing, but is a separate decision from fixing this portability bug and wasn't asked for.
+
+**Touches:**
+`gitpull.sh`, `com.charlie.gitpull.plist`
+
+---

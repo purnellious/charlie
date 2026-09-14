@@ -1,5 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  This is the primary Mac's own launchd config, checked into git as a
+  reference template — launchd plists cannot use variables or relative
+  paths, so every absolute path below (/Users/purnellious/charlie/...) is
+  specific to this machine. Installing this file as-is on any other host
+  (a different username/home directory, e.g. the always-on Mac) WILL fail.
+  Adjust every /Users/purnellious/charlie path to that host's actual charlie
+  checkout path before running `launchctl load` with it there.
+  (The always-on Mac does not actually use this file or gitpull.sh at all —
+  it has its own, separately hand-configured com.charlie.gitpull.plist that
+  runs a raw `git pull` directly. See BUG-041.)
+-->
 <plist version="1.0">
 <dict>
     <key>Label</key>
