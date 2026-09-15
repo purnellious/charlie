@@ -5,7 +5,6 @@
 - [ ] **UBE prep** — study regularly for the UBE | ongoing | added: 2026-09-15
 - [ ] **NY Bar — Pro Bono hours** — figure out Pro Bono hours requirement | added: 2026-09-15
 - [ ] **NY Bar — Skills Competency Requirement** — figure out Skills Competency Requirement | added: 2026-09-15
-- [ ] **UCT transcripts** — submitted to NY Bar, awaiting assessment, no action needed | monitoring | added: 2026-05-29
 
 ---
 
@@ -105,3 +104,5 @@
 - [ ] Wipe laptop | added: 2026-09-15
 
 ## Done
+
+- [x] **UCT transcripts** — submitted to NY Bar, assessment complete | done: 2026-09-15
