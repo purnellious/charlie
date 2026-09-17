@@ -138,3 +138,13 @@ via /distil when closing a topic. Loaded into Charlie's system prompt alongside 
 - Bug logged (BUG-036): Charlie must not state negatives as fact when search coverage was insufficient; should default to "I'm not certain, let me check" before confirming absence of something
 
 ---
+
+**Jonathan's handover & open items — 15 Sep 2026**
+
+- Jonathan is departing TS Group; full handover must be complete by **17 October 2026**. All corporate, property, account, and personal cleanup items are logged and tracked.
+- **Twelve Sigma LLC debt resolved**; Human Agency no longer in consideration.
+- **NY Bar:** Register on **1 Oct 2026** (reminder set); MPRE on **12 Nov 2026** (enrolled); UBE prep ongoing; Pro Bono hours and Skills Competency Requirement still to figure out. UCT transcripts resolved — no longer a risk to the Feb 2027 exam target.
+- Jonathan wants Charlie in a tracking role on the handover — not sequencing or second-guessing, just logging completions and flagging deadline risk.
+- IRS implications for Virgo Investments exit are under investigation; Jonathan will action when he has clarity.
+
+---
