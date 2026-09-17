@@ -17,7 +17,6 @@ log = logging.getLogger(__name__)
 
 CHARLIE_ROOT = Path(__file__).parent.parent
 CHARLIE_DOC = CHARLIE_ROOT / "charlie.md"
-DEVLOG = CHARLIE_ROOT / "devlog.md"
 CONTEXT_ARCHIVE = CHARLIE_ROOT / "context-archive.md"
 PRINCIPLES = CHARLIE_ROOT / "principles.md"
 MODEL = os.getenv("CHARLIE_MODEL", "claude-sonnet-4-6")
@@ -276,6 +275,35 @@ TOOLS = [
                 },
             },
             "required": ["description_match"],
+        },
+    },
+    {
+        "name": "set_current_focus",
+        "description": (
+            "Set or replace the current priority-sequencing note that anchors the "
+            "morning briefing's 'Today's focus' section — use this after a real "
+            "discussion with Jonathan lands on a concrete sequencing decision (e.g. "
+            "'close SA Companies and Twelve Sigma LLC indemnities first, then bank "
+            "account removals'), so tomorrow's briefing builds on that decision "
+            "instead of re-deriving priorities from scratch. Writes immediately, no "
+            "approval needed — low-stakes and fully reversible (same profile as "
+            "add_reminder). Always set expires_on to a real near-term date (e.g. the "
+            "end of this week) — never leave a sequencing note open-ended, since a "
+            "stale one is worse than none."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "note": {
+                    "type": "string",
+                    "description": "The agreed sequencing/priority, e.g. 'Close SA Companies and Twelve Sigma LLC indemnities first, then bank account removals'",
+                },
+                "expires_on": {
+                    "type": "string",
+                    "description": "ISO date (YYYY-MM-DD) after which this note stops being surfaced — must be a real future date, not open-ended",
+                },
+            },
+            "required": ["note", "expires_on"],
         },
     },
     {
@@ -566,12 +594,6 @@ def _load_charlie_doc() -> str:
     return "(charlie.md not found — this will be created as you learn about Jonathan)"
 
 
-def _load_devlog() -> str:
-    if DEVLOG.exists():
-        return DEVLOG.read_text().strip()
-    return "(devlog.md not found)"
-
-
 def _load_context_archive() -> str:
     if CONTEXT_ARCHIVE.exists():
         content = CONTEXT_ARCHIVE.read_text().strip()
@@ -585,7 +607,6 @@ def _load_context_archive() -> str:
 def _build_system_prompt() -> str:
     principles = _load_principles()
     charlie_doc = _load_charlie_doc()
-    devlog = _load_devlog()
     context_archive = _load_context_archive()
     today = datetime.now().strftime("%A, %d %B %Y")
     principles_section = f"## Design Principles\n\n{principles}\n\n" if principles else ""
@@ -639,6 +660,9 @@ when you learn something important about Jonathan. He will review before it's sa
 - **add_reminder** / **dismiss_reminder** — recurring or one-off reminders that surface in the \
 morning briefing when due; add_reminder writes immediately (no approval needed), dismiss_reminder \
 removes one Jonathan no longer wants
+- **set_current_focus** — set the priority-sequencing note that anchors the morning briefing's \
+"Today's focus"; use after a real discussion lands on a concrete sequencing call, always with a \
+near-term expires_on so it can't go stale
 - **convene_council** — run a structured multi-voice brainstorm; have a composition discussion first \
 to determine which members are relevant, confirm with Jonathan, then call this tool
 - **search_email** — live search of Jonathan's whole mailbox using Gmail query syntax; use \
@@ -685,10 +709,6 @@ entirely. If a search might not have been broad enough (a narrow query, a short 
 one sender spelling), broaden it before concluding a negative. If you're still not fully sure \
 after a real, sufficiently broad search, say so plainly ("I couldn't find this, but my search \
 may not have caught everything") rather than stating the negative as fact.
-
-## Recent changes (devlog)
-
-{devlog}
 
 ## Jonathan's context
 
@@ -1160,6 +1180,23 @@ async def handle_turn(
                         result = f"Removed: {matches[0]['description']}"
                 except Exception as e:
                     result = f"Could not dismiss reminder: {e}"
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result,
+                })
+
+            elif block.name == "set_current_focus":
+                from core.tools.focus import set_focus
+                try:
+                    record = await asyncio.to_thread(
+                        set_focus,
+                        block.input.get("note", ""),
+                        block.input.get("expires_on", ""),
+                    )
+                    result = f"Focus set until {record['expires_on']}."
+                except Exception as e:
+                    result = f"Could not set focus: {e}"
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,

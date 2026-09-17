@@ -52,7 +52,7 @@ to `core/agent.py`. Handles voice transcription, charlie.md update approvals, an
 morning briefing scheduler. Each topic is an independent conversation.
 
 **`core/agent.py`** — The Charlie agent. Calls Claude Sonnet with:
-- A system prompt built from `principles.md` (loaded first, as the governing rules), then `charlie.md`, `devlog.md`, and `context-archive.md`
+- A system prompt built from `principles.md` (loaded first, as the governing rules), then `charlie.md` and `context-archive.md`. `devlog.md` is deliberately **not** loaded here (same treatment as `bugs.md`, decided under BUG-015) — it's build-time-only reading for Claude Code (see the Required Reading list above); loading its full, ever-growing text into Charlie's live system prompt on every turn was pure token cost with no conversational payoff (fixed 2026-09-17, see devlog)
 - Extended thinking (budget_tokens configurable via env)
 - Tool definitions from the `TOOLS` list
 Thinking blocks are sent to Telegram as `| ... |` messages before the response.
@@ -118,6 +118,12 @@ useful signal from a conversation — added via `/distil` when closing a topic.
 
 Do not write to this file directly. It is appended to by `_append_to_context_archive()` in
 `core/bot.py` when a distillation is approved.
+
+Because this file is loaded into the live system prompt in full on every turn, it needs
+periodic pruning or it becomes `devlog.md`'s problem all over again. When an entry describes
+a thread that's now fully resolved or superseded by a later entry, move it (don't delete it)
+into `context-archive-cold.md` — same format, just not loaded into the system prompt. This is
+a manual judgment call (what's "resolved" isn't always mechanical), not automated.
 
 ## devlog.md
 

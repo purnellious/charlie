@@ -3,50 +3,8 @@
 Distilled context from completed topics. Each entry is the minimum useful signal extracted
 via /distil when closing a topic. Loaded into Charlie's system prompt alongside charlie.md.
 
----
-
-**News briefing system maintenance — 08 July 2026**
-
-- Three broken RSS feeds were identified and replaced: Reuters → Al Jazeera, News24 → IOL, Daily Maverick URL fixed
-- Updated source list: World News (BBC, Guardian, Al Jazeera), South Africa (Daily Maverick, IOL), Crypto Regulation (CoinDesk, CoinTelegraph), AI Regulation (MIT Tech Review, The Verge)
-- A retry mechanism was added to the scheduled briefing: if the 12:00 run fails, it retries once at 12:05 before giving up
-- Changes live in the DB; devlog updated and pushed to git
-
----
-
-**NY Bar assessment & Chainlink interview — 09 Jul 2026**
-
-- NY Bar has acknowledged receipt of UCT transcripts and is now assessing them; turnaround can be up to 6 months, which makes the February 2027 exam target tight — the submission date is the clock to watch
-- Jonathan had his final Chainlink interview today (with the CEO/Founder) — outcome not yet known
-- The pool permit Jonathan mentioned relates to his employer's property, held in a personal trust that Jonathan administers as part of his role — not Jonathan's own home
-
----
-
-**Job search & career situation — 09 Jul 2026**
-
-- Still in final interviews, no offers received yet. Chainlink final interview today (09 Jul); Human Agency final interview still being scheduled.
-- TS Group: still technically employed, July salary uncertain — treating any continued payment as better than nothing while waiting for offers.
-- Moar Labs: bank account opening blocked by employer's personal KYC issues; $50k not yet moved. No clear resolution path, just continuing to push.
-- NY Bar: UCT transcripts submitted and under assessment; 6-month window flagged as tight against a February 2027 exam target.
-
----
-
-**Follow-ups / to-do list status — 22 Jul 2026**
-
-- Jonathan calls the follow-ups tracker his "to-do list" — terminology noted in charlie.md
-- NY Bar: UCT docs already submitted and with the Bar; just waiting — no action needed
-- Chainlink: post-interview, awaiting outcome
-- Handover plan: added to follow-ups, not yet drafted — still to be worked on
-
----
-
-**Job search & financial situation — 28 Jul 2026**
-
-- Chainlink role fell through — they changed the role and did not proceed with Jonathan
-- Human Agency is now the sole active job prospect; Jonathan proposed a trial period contract to the CEO, awaiting response
-- TS Group July salary not yet paid but payment considered possible
-- Moar Labs now has two bank accounts open (previously a blocker)
-- Handover plan remains on the list but no realistic near-term trigger
+Fully resolved or superseded entries get moved out to `context-archive-cold.md` (not loaded
+into the live system prompt) rather than left here accumulating forever — see CLAUDE.md.
 
 ---
 
@@ -73,11 +31,6 @@ via /distil when closing a topic. Loaded into Charlie's system prompt alongside 
 **Charlie email integration build-out — 30 Jul 2026**
 - Email monitor (polling `jonathan@ts.org` every 2 minutes, Haiku triage, batched digests to 📧 Email topic) was already live; Jonathan extended it significantly on this day (search, read, archive, mark read/unread, send, delete)
 - A couple of remaining bugs outstanding — Jonathan plans to address them soon, no urgency
-
-**Ongoing situation context — 30 Jul 2026**
-- Jonathan is anxious about the future; aggressively job hunting while keeping Human Agency as one thread (no CEO response yet, follow-up sent)
-- TS Group July salary still unpaid
-- Moar Labs $50k investment unblocked (both accounts now open)
 
 ---
 
@@ -124,11 +77,6 @@ via /distil when closing a topic. Loaded into Charlie's system prompt alongside 
 - Thomas Pavey requesting due diligence docs: certificate of incorporation, bylaws, cap table, directors list, litigation confirmation, employment agreements, insurance policies
 - Funding round involves Peter Maxakov (Dubai), Deep Ventures, and Justin Stanford (4Di) in addition to Thomas Pavey
 - Sarah Campbell (Fidelity) can fix the cap table without starting fresh — needs a response
-
-**Twelve Sigma LLC debt — 13 August 2026**
-- Outstanding balance confirmed at R82,874.41 (inclusive of interest and legal costs)
-- Riccardo proposed offering R100k as settlement; Richard Matthews (Hanekom Attorneys) has communicated offer to Mr Coleman
-- Court date: 15 September 2026; notice of set down being filed
 
 **Extra Space Storage — 13 August 2026**
 - Unit 1072, Fishkill NY — payment of $541.00 due 18 August 2026

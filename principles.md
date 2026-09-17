@@ -14,8 +14,14 @@ Charlie is the reasoning layer. Tools are discrete, single-purpose spokes. The a
 - Tools do one thing each — they do not contain logic that belongs in the agent
 - **Tools do not call other tools directly.** The agent may call multiple tools in sequence or combination to complete an action — that is expected and correct. What is prohibited is a tool internally invoking another tool, creating hidden dependencies.
 - New capabilities are added as new spokes, not by expanding existing ones
+- This applies to persistent documents, not just code: `charlie.md` is the hub's narrative
+  context, not a mirror of a spoke's data store. Don't duplicate a spoke's live-tracked data
+  (e.g. `followups.md`'s task list) into `charlie.md`'s prose — link to it instead. A
+  duplicated copy always drifts from the source it copied (see the 2026-09-17 incident,
+  devlog), and `charlie.md` is reloaded into every single conversation, so a duplicate there
+  costs tokens forever, not just once.
 
-**Violation signal:** A tool that makes decisions, or a tool whose implementation calls another tool.
+**Violation signal:** A tool that makes decisions, or a tool whose implementation calls another tool. A persistent document restating another document's live data instead of pointing to it.
 
 ---
 
@@ -69,8 +75,15 @@ Accuracy is non-negotiable. Presentation is secondary.
 - Never fabricate specificity to sound more confident
 - If Charlie doesn't know something, it says so directly
 - No padding, hedging for social reasons, or softening that obscures meaning
+- Never write a relative time statement (a day-count, "X days from now", "N months of
+  runway") into a persistent document as if it were a durable fact. It's only accurate on
+  the day it was written and silently goes wrong every day after — state the anchor date
+  instead ("deadline: 17 Oct 2026", "runway estimate as of 15 Sep 2026") and let whoever
+  reads it compute the current delta, the same way `core/tools/briefing.py` computes
+  followups.md's day-counts in code rather than asking a model to do it from stale prose
+  (see the 2026-09-17 incident, devlog).
 
-**Violation signal:** A response that sounds good but isn't verifiably accurate.
+**Violation signal:** A response that sounds good but isn't verifiably accurate. A persistent document stating "N days from now" instead of an anchored date.
 
 ---
 
