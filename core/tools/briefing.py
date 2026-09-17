@@ -14,6 +14,7 @@ already uses for the same reason (both ingest untrusted RSS/email content).
 """
 import logging
 import os
+import re
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -71,35 +72,107 @@ def _fetch_actionable_emails() -> list[dict]:
         return []
 
 
-def _load_due_followups() -> list[str]:
+_DATE_FORMATS = ("%Y-%m-%d", "%d %B %Y")
+_SECTION_HEADER_RE = re.compile(r"^###\s")
+_SECTION_DEADLINE_RE = re.compile(r"deadline:?\s+(.+?)\s*$", re.IGNORECASE)
+_SUBHEADING_RE = re.compile(r"^\*\*(.+)\*\*$")
+_INLINE_DEADLINE_RE = re.compile(r"\|\s*deadline:\s*([^|]+)", re.IGNORECASE)
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+MAX_FOLLOWUPS = 15
+
+
+def _parse_date(text: str) -> date | None:
+    text = text.strip()
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _days_phrase(days_remaining: int) -> str:
+    if days_remaining < 0:
+        return f"{-days_remaining} days overdue"
+    if days_remaining == 0:
+        return "due today"
+    return f"due in {days_remaining} days"
+
+
+def _load_due_followups() -> list[dict]:
     """
-    Ported from the old core/scheduler.py::_load_due_followups — that
-    function's only caller (_create_morning_briefing) was replaced by this
-    module. Same 'chase from:' date-gated parsing, unchanged format.
+    Parses followups.md's Open section. Every item's deadline is resolved in
+    code — its own inline `| deadline: YYYY-MM-DD` field, or one inherited
+    from an enclosing '### <Section> — deadline <date>' header — and
+    annotated with a code-computed days_remaining, so the synthesis model is
+    only ever handed an already-correct number, never asked to do date
+    arithmetic itself. (Root cause of a real incident: a hand-written
+    "X days from <date>" note written elsewhere got parroted back unchanged
+    weeks later, because nothing recomputed it — see devlog 2026-09-17.)
+
+    Items with no resolvable deadline (ongoing/ambient items like "study
+    regularly") are intentionally excluded — they aren't date-driven and
+    don't need daily resurfacing; Jonathan can still ask about them any time.
+
+    Replaces this function's old 'chase from:' parsing — followups.md moved
+    to 'deadline:'/'added:' fields on 2026-09-15 without the parser being
+    updated to match, which silently zeroed out this entire section of the
+    briefing for two days with no error anywhere.
     """
     today = _today()
-    due = []
+    in_open = False
+    section_deadline: date | None = None
+    subheading: str | None = None
+    due: list[dict] = []
     try:
         with open(FOLLOWUPS_PATH, "r") as f:
-            for line in f:
-                line = line.strip()
+            for raw_line in f:
+                line = raw_line.strip()
+                if line.startswith("## "):
+                    # Track membership with a flag rather than breaking out of
+                    # the loop on the first non-"## Open" heading — a break
+                    # would silently zero out the whole section if "## Open"
+                    # isn't literally the file's first "## " heading (code
+                    # review, round 1: this was the exact "silent zero output,
+                    # no error" failure class this rewrite was built to kill).
+                    in_open = (line == "## Open")
+                    section_deadline = None
+                    subheading = None
+                    continue
+                if not in_open:
+                    continue
+                if _SECTION_HEADER_RE.match(line):
+                    deadline_match = _SECTION_DEADLINE_RE.search(line)
+                    section_deadline = _parse_date(deadline_match.group(1)) if deadline_match else None
+                    subheading = None
+                    continue
+                sub_match = _SUBHEADING_RE.match(line)
+                if sub_match:
+                    subheading = sub_match.group(1).strip()
+                    continue
                 if not line.startswith("- [ ]"):
                     continue
-                if "chase from:" not in line:
+                body = line[len("- [ ]"):].strip()
+                inline_match = _INLINE_DEADLINE_RE.search(body)
+                deadline = _parse_date(inline_match.group(1)) if inline_match else section_deadline
+                if deadline is None:
                     continue
-                after_chase = line.split("chase from:")[1]
-                chase_str = after_chase.split("|")[0].strip()
-                try:
-                    chase_date = date.fromisoformat(chase_str)
-                except ValueError:
-                    continue
-                if chase_date <= today:
-                    desc = line[len("- [ ] "):].split("|")[0].strip()
-                    due.append(desc)
+                desc = _BOLD_RE.sub(r"\1", body.split("|")[0].strip())
+                if subheading:
+                    desc = f"{subheading} — {desc}"
+                due.append({
+                    "description": desc,
+                    "deadline": deadline.isoformat(),
+                    "days_remaining": (deadline - today).days,
+                })
     except FileNotFoundError:
         pass
     except Exception as e:
+        # Log and fall through to whatever was already parsed, rather than
+        # discarding it — a parse error partway through the file shouldn't
+        # cost every item found before it (code review, round 1).
         log.error(f"Briefing: followups read failed: {e}")
+    due.sort(key=lambda d: d["days_remaining"])
     return due
 
 
@@ -139,7 +212,7 @@ def _quiet_day_message(today: date) -> str:
     return f"Good morning. It's {today.strftime('%A, %d %B %Y')}. Nothing urgent on the radar — a clear one."
 
 
-def _synthesize(today, charlie_context, archive_excerpt, emails, due_followups, reminders_due, news_items) -> str:
+def _synthesize(today, charlie_context, archive_excerpt, emails, due_followups, reminders_due, news_items, current_focus) -> str:
     parts = [f"Today is {today.strftime('%A, %d %B %Y')}."]
     if charlie_context:
         parts.append(f"\nWhat Charlie knows about Jonathan:\n{charlie_context}")
@@ -153,7 +226,22 @@ def _synthesize(today, charlie_context, archive_excerpt, emails, due_followups, 
         )
         parts.append(f"\nActionable emails (last 24h):\n{lines}")
     if due_followups:
-        parts.append("\nOpen follow-ups due:\n" + "\n".join(f"- {d}" for d in due_followups))
+        shown = due_followups[:MAX_FOLLOWUPS]
+        lines = "\n".join(
+            f"- {d['description']} — {d['deadline']} ({_days_phrase(d['days_remaining'])})"
+            for d in shown
+        )
+        overflow = len(due_followups) - len(shown)
+        if overflow > 0:
+            nearest_omitted = due_followups[len(shown)]
+            lines += (
+                f"\n- (+{overflow} more open follow-ups, nearest one due "
+                f"{nearest_omitted['deadline']} — see followups.md for the full list)"
+            )
+        parts.append(
+            "\nOpen follow-ups (days remaining are already computed — do not recalculate "
+            f"or restate them differently):\n{lines}"
+        )
     if reminders_due:
         lines = "\n".join(
             f"- {r['description']}" + (f" ({r['context']})" if r.get("context") else "")
@@ -163,6 +251,11 @@ def _synthesize(today, charlie_context, archive_excerpt, emails, due_followups, 
     if news_items:
         lines = "\n".join(f"- [{n['category']}] {n['title']}: {n['summary']}" for n in news_items)
         parts.append(f"\nNews that might matter:\n{lines}")
+    if current_focus:
+        parts.append(
+            f"\nJonathan's current priority sequencing (agreed {current_focus['set_on']}, "
+            f"still active): {current_focus['note']}"
+        )
 
     prompt = "\n".join(parts)
 
@@ -174,14 +267,19 @@ def _synthesize(today, charlie_context, archive_excerpt, emails, due_followups, 
             "You are writing Jonathan's dynamic morning briefing as Charlie. Structure it as "
             "a short, actionable daily planner using only the sections below that have real "
             "content — omit any section with nothing to say, don't pad it out:\n\n"
-            "- Today's focus — 1-3 top priorities, drawn from judgment across everything given\n"
+            "- Today's focus — 1-3 top priorities, drawn from judgment across everything given. "
+            "If a current priority sequencing note is given, treat it as the anchor for this "
+            "section rather than re-deriving sequencing from scratch\n"
             "- Emails to action — the actionable emails, with any relevant context connecting "
             "them to past discussions if it's given\n"
             "- Open items / reminders — follow-ups and reminders due\n"
             "- News that matters — only if genuinely relevant, framed as 'because of X, you "
             "might want to Y'\n\n"
-            "Plain text only, no markdown headers or asterisks. Keep it tight — this is a "
-            "planner Jonathan reads in 30 seconds, not a report."
+            "Every day-count you're given (e.g. 'due in 12 days', '3 days overdue') is already "
+            "computed correctly — never recalculate one, restate it differently, or invent a "
+            "day-count for a date that wasn't given one. Plain text only, no markdown headers "
+            "or asterisks. Keep it tight — this is a planner Jonathan reads in 30 seconds, not "
+            "a report."
         ),
         messages=[{"role": "user", "content": prompt}],
     )
@@ -228,12 +326,22 @@ def build_briefing_text(charlie_context: str, archive_excerpt: str, dry_run: boo
         log.error(f"Briefing: reminders fetch failed: {e}")
         reminders_due = []
 
+    try:
+        from core.tools.focus import get_active_focus
+        current_focus = get_active_focus()
+    except Exception as e:
+        log.error(f"Briefing: focus fetch failed: {e}")
+        current_focus = None
+
     news_items = [] if dry_run else _fetch_news_section()
 
-    if not emails and not due_followups and not reminders_due and not news_items:
+    if not emails and not due_followups and not reminders_due and not news_items and not current_focus:
         text = _quiet_day_message(today)
     else:
-        text = _synthesize(today, charlie_context, archive_excerpt, emails, due_followups, reminders_due, news_items)
+        text = _synthesize(
+            today, charlie_context, archive_excerpt, emails, due_followups,
+            reminders_due, news_items, current_focus,
+        )
 
     fired_reminder_ids = [] if dry_run else [r["id"] for r in reminders_due]
     return text, fired_reminder_ids, today
