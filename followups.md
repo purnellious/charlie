@@ -11,7 +11,7 @@
 ### Handover — deadline 17 October 2026
 
 **SA Companies**
-- [ ] Indemnity | added: 2026-09-15
+- [~] Indemnity — Draft ready for signature | added: 2026-09-15
 
 **AOD**
 - [ ] Twelve Sigma | added: 2026-09-15
@@ -23,6 +23,7 @@
 - [ ] Remove as NJ agent | added: 2026-09-15
 
 **MyMonero Inc**
+*(Likely to shut down — awaiting funds in account)*
 - [ ] Indemnity | added: 2026-09-15
 - [ ] Remove from bank account | added: 2026-09-15
 - [ ] Remove from NJ company | added: 2026-09-15
@@ -34,7 +35,7 @@
 **Virgo Investments Corporation**
 - [ ] Indemnity | added: 2026-09-15
 - [ ] Remove from bank account | added: 2026-09-15
-- [ ] Sell shares and resign as director | added: 2026-09-15
+- [ ] Sell shares and resign as director (awaiting property transfer before resigning) | added: 2026-09-15
 - [ ] Notify IRS? (investigating) | added: 2026-09-15
 
 **Mondero Distribution Company (US)**
@@ -46,24 +47,27 @@
 - [ ] Remove from bank account | added: 2026-09-15
 
 **Slaz Services**
-- [ ] Indemnity | added: 2026-09-15
+- [~] Indemnity — Docs ready | added: 2026-09-15
 - [ ] Remove from bank account | added: 2026-09-15
 - [ ] Identify if removal as director is needed | added: 2026-09-15
 
 **Slaz Holdings**
-- [ ] Indemnity | added: 2026-09-15
+*(Cayman registration required — agents may not cooperate (risk flagged))*
+- [~] Indemnity — Docs ready | added: 2026-09-15
 - [ ] Resign as director | added: 2026-09-15
 
 **Curated Chaos LLC**
+*(Confirmed for shutdown)*
 - [ ] Indemnity | added: 2026-09-15
 - [ ] Dissolve LLC | added: 2026-09-15
 - [ ] Close bank account | added: 2026-09-15
 
 **Idle Sword Studios Inc**
 - [ ] Indemnity | added: 2026-09-15
-- [ ] Amend share capital | added: 2026-09-15
-- [ ] Issue shares | added: 2026-09-15
-- [ ] Resign as director / appoint Chris | added: 2026-09-15
+- [~] Amend share capital — Docs ready | added: 2026-09-15
+- [~] Issue shares — Docs ready | added: 2026-09-15
+- [~] Resign as director / appoint Chris — Awaiting Elliot confirmation on directorship | added: 2026-09-15
+*(Filing can proceed once Elliot confirms)*
 - [ ] Transfer bank account | added: 2026-09-15
 
 **Splinter Capital LLC**
@@ -95,11 +99,11 @@
 - [ ] Regus | added: 2026-09-15
 - [ ] TMobile | added: 2026-09-15
 - [ ] Verizon | added: 2026-09-15
-- [ ] Storage | added: 2026-09-15
+- [ ] Storage — Must be paid up before Jonathan can be removed (blocker) | added: 2026-09-15
 
 **Personal**
 - [ ] Remove personal number from as much as possible and find replacement number | added: 2026-09-15
-- [ ] Change contacts for iCloud account | added: 2026-09-15
+- [x] Change contacts for iCloud account — AppleID moved to personal mail | added: 2026-09-15
 - [ ] Move Charlie to personal account | added: 2026-09-15
 - [ ] Wipe laptop | added: 2026-09-15
 
